@@ -127,12 +127,15 @@ FIRMS_DATA = {
 # --- MOTOR DE SIMULACIÓN ---
 def simulate_phase(balance, risk_money, win_rate, rr, profit_target_pct, max_total_dd_pct, comm_per_lot, pip_val, sl_min, sl_max, is_funded=False):
     curr = balance
-    # En cuenta fondeada, no hay profit target para "pasar", pero definimos un umbral mínimo de retiro (ej. 2%) para considerar "Éxito"
-    target_equity = balance + (balance * (profit_target_pct/100)) if not is_funded else balance + (balance * 0.025) 
+    # En cuenta fondeada, el "objetivo" es sobrevivir el mes con algo de profit (ej 1%)
+    target_equity = balance + (balance * (profit_target_pct/100)) if not is_funded else balance + (balance * 0.01) 
     limit_equity = balance - (balance * (max_total_dd_pct/100))
     trades = 0
     
-    while curr > limit_equity and curr < target_equity and trades < 1000:
+    # Limite de trades para simular "un mes" o "un periodo"
+    max_trades = 1000 if not is_funded else 100 # Asumimos 100 trades promedio por mes de vida
+    
+    while curr > limit_equity and curr < target_equity and trades < max_trades:
         trades += 1
         current_trade_sl = random.uniform(sl_min, sl_max)
         current_lot_size = risk_money / (current_trade_sl * pip_val)
@@ -146,18 +149,19 @@ def simulate_phase(balance, risk_money, win_rate, rr, profit_target_pct, max_tot
             curr -= total_loss
 
     success = curr >= target_equity
-    return success, trades, curr
+    return success, curr
 
 def run_business_simulation(firm_data, risk_pct, win_rate, rr, comm, sl_min, sl_max):
     n_sims = 1000
     
-    # Contadores de Resultados
-    fail_p1 = 0
-    fail_p2 = 0
-    fail_funded = 0 # Llegó a fondeada pero la quemó antes de retirar
-    got_payout = 0  # Llegó a retirar
+    # Contadores de Supervivencia por Etapa
+    pass_p1 = 0
+    pass_p2 = 0
+    pass_payout_1 = 0
+    pass_payout_2 = 0
+    pass_payout_3 = 0 # Longevidad
     
-    total_payout_amount = 0
+    total_net_returns = 0
     
     balance = firm_data['size']
     risk_money = balance * (risk_pct / 100)
@@ -165,56 +169,56 @@ def run_business_simulation(firm_data, risk_pct, win_rate, rr, comm, sl_min, sl_
     is_two_step = firm_data.get('profit_p2', 0) > 0
     
     for _ in range(n_sims):
-        # 1. FASE 1
-        p1_ok, _, _ = simulate_phase(balance, risk_money, win_rate, rr, firm_data['profit_p1'], firm_data['total_dd'], comm, pip_val, sl_min, sl_max)
-        
-        if not p1_ok:
-            fail_p1 += 1
-            continue
+        # --- FASE 1 ---
+        p1_ok, _ = simulate_phase(balance, risk_money, win_rate, rr, firm_data['profit_p1'], firm_data['total_dd'], comm, pip_val, sl_min, sl_max)
+        if not p1_ok: continue
+        pass_p1 += 1
             
-        # 2. FASE 2 (Si existe)
+        # --- FASE 2 (Si existe) ---
         if is_two_step:
-            p2_ok, _, _ = simulate_phase(balance, risk_money, win_rate, rr, firm_data['profit_p2'], firm_data['total_dd'], comm, pip_val, sl_min, sl_max)
-            if not p2_ok:
-                fail_p2 += 1
-                continue
-        
-        # 3. FASE FONDEADA (El objetivo aquí es sobrevivir hasta el primer retiro, ej 2.5% profit)
-        funded_ok, _, final_balance = simulate_phase(balance, risk_money, win_rate, rr, 0, firm_data['total_dd'], comm, pip_val, sl_min, sl_max, is_funded=True)
-        
-        if funded_ok:
-            got_payout += 1
-            # Calculamos cuanto retiraría (Profit Split 80% aprox del profit generado)
-            profit_generated = final_balance - balance
-            payout_val = profit_generated * 0.80 
-            
-            # Sumamos reembolso del fee si aplica
-            payout_val += firm_data['cost'] 
-            # Sumamos bonus fase 1 si aplica
-            payout_val += firm_data.get('p1_bonus', 0)
-            
-            total_payout_amount += payout_val
+            p2_ok, _ = simulate_phase(balance, risk_money, win_rate, rr, firm_data['profit_p2'], firm_data['total_dd'], comm, pip_val, sl_min, sl_max)
+            if not p2_ok: continue
+            pass_p2 += 1
         else:
-            fail_funded += 1
+            pass_p2 += 1 # Si es 1-step, pasar fase 1 cuenta como fase 2 completada para la lógica
+        
+        # --- MES 1: Primer Retiro ---
+        m1_ok, m1_bal = simulate_phase(balance, risk_money, win_rate, rr, 0, firm_data['total_dd'], comm, pip_val, sl_min, sl_max, is_funded=True)
+        if m1_ok:
+            pass_payout_1 += 1
+            profit = m1_bal - balance
+            payout = (profit * 0.8) + firm_data['cost'] + firm_data.get('p1_bonus', 0)
+            total_net_returns += payout
+            
+            # --- MES 2: Segundo Retiro (Sobrevivir otro mes) ---
+            # Reseteamos balance a inicial (simulando retiro)
+            m2_ok, m2_bal = simulate_phase(balance, risk_money, win_rate, rr, 0, firm_data['total_dd'], comm, pip_val, sl_min, sl_max, is_funded=True)
+            if m2_ok:
+                pass_payout_2 += 1
+                profit2 = m2_bal - balance
+                total_net_returns += (profit2 * 0.8)
+                
+                # --- MES 3: Tercer Retiro ---
+                m3_ok, m3_bal = simulate_phase(balance, risk_money, win_rate, rr, 0, firm_data['total_dd'], comm, pip_val, sl_min, sl_max, is_funded=True)
+                if m3_ok:
+                    pass_payout_3 += 1
+                    profit3 = m3_bal - balance
+                    total_net_returns += (profit3 * 0.8)
 
-    # Métricas Finales
-    prob_funded = ((got_payout + fail_funded) / n_sims) * 100 # Probabilidad de obtener la cuenta
-    prob_payout = (got_payout / n_sims) * 100                 # Probabilidad de RETIRAR dinero
+    # Cálculo de Probabilidades Acumuladas
+    prob_p1 = (pass_p1 / n_sims) * 100
+    prob_p2 = (pass_p2 / n_sims) * 100
+    prob_pay1 = (pass_payout_1 / n_sims) * 100
+    prob_pay2 = (pass_payout_2 / n_sims) * 100
+    prob_pay3 = (pass_payout_3 / n_sims) * 100
     
-    avg_payout = total_payout_amount / got_payout if got_payout > 0 else 0
-    
-    # Unit Economics (ROI)
-    # Costo Ponderado = Costo Cuenta * (Intentos necesarios estadísticos)
-    attempts_needed = 100 / prob_funded if prob_funded > 0 else 100
-    real_cost_acquisition = math.ceil(attempts_needed) * firm_data['cost']
-    
-    # Expectativa Matemática (EV) = (Prob Retiro * Promedio Retiro) - Costo Real
-    ev_net = ((prob_payout/100) * avg_payout) - firm_data['cost'] # Usamos costo unitario para EV simple por intento
+    avg_return_total = total_net_returns / n_sims # Retorno promedio por cada cuenta comprada (EV)
+    roi_net = avg_return_total - firm_data['cost']
 
     return {
-        "fail_p1": fail_p1, "fail_p2": fail_p2, "fail_funded": fail_funded, "success": got_payout,
-        "prob_funded": prob_funded, "prob_payout": prob_payout,
-        "avg_payout": avg_payout, "real_cost": real_cost_acquisition, "ev_net": ev_net
+        "prob_p1": prob_p1, "prob_p2": prob_p2, 
+        "prob_pay1": prob_pay1, "prob_pay2": prob_pay2, "prob_pay3": prob_pay3,
+        "ev_net": roi_net
     }
 
 # --- FRONTEND ---
@@ -244,87 +248,110 @@ else:
         st.session_state['logged_in'] = False; st.rerun()
     st.markdown("---")
 
-    # --- SIDEBAR ---
-    st.sidebar.header("1. Configuración de Negocio")
+    # --- SIDEBAR (CONFIG) ---
+    st.sidebar.header("1. Configuración")
     sel_company = st.sidebar.selectbox("Empresa", list(FIRMS_DATA.keys()))
     sel_program = st.sidebar.selectbox("Programa", list(FIRMS_DATA[sel_company].keys()))
-    sel_size = st.sidebar.selectbox("Capital Inicial", list(FIRMS_DATA[sel_company][sel_program].keys()))
+    sel_size = st.sidebar.selectbox("Capital", list(FIRMS_DATA[sel_company][sel_program].keys()))
     
     firm = FIRMS_DATA[sel_company][sel_program][sel_size]
     full_name_db = f"{sel_company} - {sel_program} ({sel_size})"
     
-    st.sidebar.info(f"💰 Costo: ${firm['cost']} | 🎯 Profit Payout: ~80%")
-
-    st.sidebar.header("2. Tu Sistema")
+    st.sidebar.header("2. Estrategia")
     wr = st.sidebar.slider("Win Rate (%)", 20, 80, 45)
     rr = st.sidebar.slider("Ratio R:R", 0.5, 5.0, 2.0)
-    risk = st.sidebar.slider("Riesgo por Trade (%)", 0.1, 3.0, 1.0)
-    
-    st.sidebar.header("3. Costos Operativos")
+    risk = st.sidebar.slider("Riesgo Trade (%)", 0.1, 3.0, 1.0)
     comm = st.sidebar.number_input("Comisión ($/Lote)", 0.0, 10.0, 7.0)
     c_sl1, c_sl2 = st.sidebar.columns(2)
     sl_min = c_sl1.number_input("SL Mín", 1, 100, 5)
     sl_max = c_sl2.number_input("SL Max", 1, 200, 15)
 
-    if st.button("📊 Analizar Viabilidad del Negocio", type="primary", use_container_width=True):
+    # --- TARJETA DE REGLAS (ALWAYS ON) ---
+    # Esto responde a tu petición de tener las reglas siempre visibles
+    st.markdown("### 📋 Reglas y Condiciones de la Cuenta")
+    
+    # Preparamos textos
+    is_2step = firm.get('profit_p2', 0) > 0
+    target_txt = f"{firm['profit_p1']}% (F1) / {firm['profit_p2']}% (F2)" if is_2step else f"{firm['profit_p1']}%"
+    
+    rule_c1, rule_c2, rule_c3, rule_c4 = st.columns(4)
+    rule_c1.metric("Costo (Fee)", f"${firm['cost']}", border=True)
+    rule_c2.metric("Objetivo Profit", target_txt, border=True)
+    rule_c3.metric("Drawdown Max", f"{firm['total_dd']}%", f"Diario: {firm.get('daily_dd',0)}%", border=True)
+    rule_c4.metric("Tamaño Cuenta", f"${firm['size']:,}", border=True)
+
+    if st.button("📊 Simular Viabilidad del Negocio", type="primary", use_container_width=True):
         
-        with st.spinner("Proyectando flujos de caja y tasas de retiro..."):
+        with st.spinner("Simulando Fases, Retiros y Longevidad..."):
             stats = run_business_simulation(firm, risk, wr, rr, comm, sl_min, sl_max)
-            save_plan_db(st.session_state['username'], full_name_db, wr, rr, stats['prob_payout'], stats['real_cost'])
+            
+            # Cálculo de "Costo Real" para DB
+            attempts_needed = 100 / stats['prob_pay1'] if stats['prob_pay1'] > 0 else 100
+            real_cost = math.ceil(attempts_needed) * firm['cost']
+            save_plan_db(st.session_state['username'], full_name_db, wr, rr, stats['prob_pay1'], real_cost)
 
-        # --- SECCIÓN 1: EL VEREDICTO (KPIs Financieros) ---
-        st.subheader("1. Viabilidad Financiera")
-        
-        kpi1, kpi2, kpi3 = st.columns(3)
-        
-        # Color del ROI
-        roi_delta = "off"
-        roi_color = "normal"
-        if stats['ev_net'] > 0:
-            roi_delta = f"+${int(stats['ev_net'])} de Ganancia Esperada"
-            roi_color = "normal" # Verde por defecto en delta positivo
-        else:
-            roi_delta = f"-${int(abs(stats['ev_net']))} de Pérdida Esperada"
-            roi_color = "inverse" # Rojo
-
-        kpi1.metric("Costo Real de Adquisición", f"${stats['real_cost']}", 
-                   help="Basado en la probabilidad de fallo, este es el capital que deberías tener listo para asegurar el fondeo.")
-        
-        kpi2.metric("Primer Retiro Promedio", f"${int(stats['avg_payout'])}",
-                   help="Si logras cobrar, este es el monto estimado (incluyendo reembolso + profit split).")
-        
-        kpi3.metric("Expectativa Matemática (EV)", f"{'✅ Rentable' if stats['ev_net']>0 else '❌ No Rentable'}", 
-                   delta=roi_delta, delta_color=roi_color)
-
-        # --- SECCIÓN 2: EL EMBUDO (Visualización Simple) ---
-        st.subheader("2. El Embudo de Probabilidad (1,000 Traders)")
-        st.caption("Si 1,000 traders operan con tu sistema, este sería su destino:")
-        
-        # Datos para gráfico de barras simple
-        funnel_data = pd.DataFrame({
-            "Etapa": ["1. Pierden Fase 1", "2. Pierden Fase 2", "3. Pierden Fondeada", "4. 🎉 LOGRAN RETIRO"],
-            "Cantidad": [stats['fail_p1'], stats['fail_p2'], stats['fail_funded'], stats['success']]
-        }).set_index("Etapa")
-        
-        # Usamos colores personalizados si es posible, sino default
-        st.bar_chart(funnel_data, color="#2ecc71") # Verde genérico, pero el gráfico ayuda mucho
-
-        # --- SECCIÓN 3: PROBABILIDADES CLAVE ---
+        # --- RESULTADOS ORGANIZADOS EN PESTAÑAS ---
         st.divider()
-        col_p1, col_p2 = st.columns(2)
-        
-        col_p1.info(f"""
-        **🎯 Probabilidad de Fondeo: {stats['prob_funded']:.1f}%**
-        Es la probabilidad de pasar todas las fases de evaluación.
-        """)
-        
-        col_p2.success(f"""
-        **💸 Probabilidad de Cobrar: {stats['prob_payout']:.1f}%**
-        Es la probabilidad real de que este dinero retorne a tu bolsillo.
-        *(Incluye pasar las pruebas + sobrevivir el primer mes)*.
-        """)
+        tab_flow, tab_business = st.tabs(["🛤️ El Viaje (Paso a Paso)", "💼 Detalle del Negocio"])
+
+        # PESTAÑA 1: EL FLUJO CRONOLÓGICO
+        with tab_flow:
+            st.subheader("Probabilidades Paso a Paso")
+            st.caption("¿Qué tan lejos llegará tu cuenta según tu estadística actual?")
+            
+            # Diagrama de Flujo Horizontal con Métricas
+            col_step1, col_arrow1, col_step2, col_arrow2, col_fund = st.columns([2,1,2,1,2])
+            
+            with col_step1:
+                st.info("##### 1️⃣ Fase de Evaluación")
+                st.metric("Pasar Fase 1", f"{stats['prob_p1']:.1f}%")
+                if is_2step:
+                    st.metric("Pasar Fase 2", f"{stats['prob_p2']:.1f}%")
+            
+            with col_arrow1:
+                st.markdown("<h1 style='text-align: center; color: grey;'>⮕</h1>", unsafe_allow_html=True)
+
+            with col_step2:
+                st.warning("##### 2️⃣ Primer Cobro")
+                st.metric("Prob. 1er Retiro", f"{stats['prob_pay1']:.1f}%", help="Probabilidad de pasar TODO y cobrar al menos una vez.")
+            
+            with col_arrow2:
+                st.markdown("<h1 style='text-align: center; color: grey;'>⮕</h1>", unsafe_allow_html=True)
+
+            with col_fund:
+                st.success("##### 3️⃣ Consistencia")
+                st.metric("Llegar a 2do Retiro", f"{stats['prob_pay2']:.1f}%")
+                st.metric("Llegar a 3er Retiro", f"{stats['prob_pay3']:.1f}%")
+
+        # PESTAÑA 2: EL NEGOCIO (NUMEROS DUROS)
+        with tab_business:
+            st.subheader("Análisis Financiero")
+            
+            b_col1, b_col2, b_col3 = st.columns(3)
+            
+            # Costo Real Ajustado
+            real_attempts = 100 / stats['prob_pay1'] if stats['prob_pay1'] > 0 else 100
+            real_budget = math.ceil(real_attempts) * firm['cost']
+            
+            b_col1.metric("Costo Real Adquisición", f"${real_budget}", 
+                         help="Dinero que estadísticamente debes tener preparado para lograr 1 retiro exitoso.")
+            
+            b_col2.metric("Intentos Estimados", f"{real_attempts:.1f}", 
+                         help="Cuántas cuentas sueles quemar por cada una que cobra.")
+            
+            # ROI
+            roi_val = stats['ev_net']
+            roi_label = "Rentable" if roi_val > 0 else "No Rentable"
+            b_col3.metric("Expectativa (EV) por Intento", f"${roi_val:.0f}", roi_label, 
+                         delta_color="normal" if roi_val > 0 else "inverse")
+            
+            st.info("""
+            **Interpretación:**
+            * **Prob. 1er Retiro:** Es tu métrica más importante. Si es baja (<20%), estás regalando dinero en fees.
+            * **Consistencia:** Si la prob. cae drásticamente entre el 1er y 3er retiro, tu estrategia es demasiado arriesgada para mantener una cuenta viva a largo plazo.
+            """)
 
     st.divider()
-    with st.expander("📜 Historial de Análisis"):
+    with st.expander("📜 Historial"):
         planes = get_user_plans(st.session_state['username'])
         if planes: st.dataframe(pd.DataFrame(planes, columns=["Empresa", "Prob Payout %", "Costo Real $", "Fecha"]), use_container_width=True)
