@@ -10,7 +10,7 @@ import time
 # --- CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Prop Firm Unit Economics", page_icon="🛡️", layout="wide")
 
-# --- ⚠️ FIX: INICIALIZAR SESIÓN AQUÍ (ANTES DE TODO) ---
+# --- INICIALIZAR SESIÓN (Evita el KeyError) ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'username' not in st.session_state:
@@ -52,7 +52,7 @@ def init_db():
             """))
             conn.commit()
 
-# --- AUTH FUNCTIONS ---
+# --- FUNCIONES AUTH & DB ---
 def register_user(username, password, auth_type='manual'):
     if not engine: return "No hay conexión a BD"
     try:
@@ -95,15 +95,36 @@ def get_user_plans(username):
 
 if engine: init_db()
 
-# --- DATOS EMPRESAS ---
-PROP_FIRMS = {
-    "FTMO - 100k Swing": {"cost": 540, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit": 10.0},
-    "FundedNext - 100k Stellar": {"cost": 519, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit": 8.0},
-    "Apex - 50k Futures": {"cost": 167, "size": 50000, "daily_dd": 0.0, "total_dd": 4.0, "profit": 6.0},
-    "Alpha Capital - 50k": {"cost": 297, "size": 50000, "daily_dd": 5.0, "total_dd": 10.0, "profit": 8.0}
+# --- DATOS ESTRUCTURADOS DE EMPRESAS ---
+# Ahora usamos un diccionario anidado para facilitar la selección
+FIRMS_DATA = {
+    "The5ers": {
+        "Hyper Growth - 5K": {
+            "cost": 260, "size": 5000, "daily_dd": 3.0, "total_dd": 6.0, "profit": 10.0, "bonus": 15
+        },
+        "Hyper Growth - 10K": {
+            "cost": 450, "size": 10000, "daily_dd": 3.0, "total_dd": 6.0, "profit": 10.0, "bonus": 25
+        },
+        "Hyper Growth - 20K": {
+            "cost": 850, "size": 20000, "daily_dd": 3.0, "total_dd": 6.0, "profit": 10.0, "bonus": 50
+        }
+    },
+    "FTMO": {
+        "Swing - 100k": {
+            "cost": 540, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit": 10.0, "bonus": 0
+        },
+        "Normal - 100k": {
+            "cost": 540, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit": 10.0, "bonus": 0
+        }
+    },
+    "FundedNext": {
+        "Stellar - 100k": {
+            "cost": 519, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit": 8.0, "bonus": 0
+        }
+    }
 }
 
-# --- SIMULACIÓN DINÁMICA (NUEVO CORE) ---
+# --- SIMULACIÓN DINÁMICA ---
 def run_dynamic_simulation(balance, risk_pct, win_rate, rr, profit_target, max_total_dd, 
                           trades_per_day, comm_per_lot, sl_min, sl_max):
     
@@ -112,12 +133,10 @@ def run_dynamic_simulation(balance, risk_pct, win_rate, rr, profit_target, max_t
     total_trades_log = []
     max_losing_streak_log = []
     equity_curves = [] 
-    
-    # Lista para calcular el lotaje promedio real usado
     avg_lots_used_log = []
     
     risk_money = balance * (risk_pct / 100)
-    pip_value_std = 10 # EURUSD Standard
+    pip_value_std = 10 
     
     limit_equity = balance - (balance * (max_total_dd/100))
     target_equity = balance + (balance * (profit_target/100))
@@ -132,29 +151,21 @@ def run_dynamic_simulation(balance, risk_pct, win_rate, rr, profit_target, max_t
         while curr > limit_equity and curr < target_equity and trades < 1000:
             trades += 1
             
-            # --- DINÁMICA DE MERCADO ---
-            # Cada trade tiene un SL distinto dentro del rango del usuario
+            # Dinámica de Mercado
             current_trade_sl = random.uniform(sl_min, sl_max)
             
-            # Calculamos lotaje para ESE trade específico
-            # Si el SL es muy pequeño, el lotaje se dispara (y la comisión también)
+            # Cálculo de lotaje (sin lógica de margen por ahora)
             current_lot_size = risk_money / (current_trade_sl * pip_value_std)
-            
-            # Guardamos dato para estadísticas
             if i < 5: avg_lots_used_log.append(current_lot_size)
             
             trade_commission = current_lot_size * comm_per_lot
             
-            # Resultado neto del trade
             if random.random() < (win_rate/100):
-                # GANA: (Riesgo * RR) - Comisión
                 gross_profit = risk_money * rr
                 net_profit = gross_profit - trade_commission
                 curr += net_profit
                 current_streak = 0
             else:
-                # PIERDE: Riesgo + Comisión
-                # Nota: En stop loss pierdes lo arriesgado Y ADEMÁS pagas comisión
                 total_loss = risk_money + trade_commission
                 curr -= total_loss
                 current_streak += 1
@@ -196,7 +207,7 @@ if not st.session_state['logged_in']:
             if msg == "OK": st.success("Creado. Ingresa en la pestaña Entrar.")
             else: st.error(msg)
 else:
-    # DASHBOARD
+    # --- DASHBOARD LOGUEADO ---
     col_h1, col_h2 = st.columns([3,1])
     col_h1.title("🛡️ Prop Firm Unit Economics")
     col_h2.write(f"👤 {st.session_state['username']}")
@@ -204,11 +215,27 @@ else:
         st.session_state['logged_in'] = False; st.rerun()
     st.markdown("---")
 
-    # SIDEBAR
+    # --- SIDEBAR (SELECCIÓN JERÁRQUICA) ---
     st.sidebar.header("1. La Empresa")
-    firm_name = st.sidebar.selectbox("Selecciona Desafío", list(PROP_FIRMS.keys()))
-    firm = PROP_FIRMS[firm_name]
-    st.sidebar.info(f"💰 Costo: ${firm['cost']} | 📉 DD Total: {firm['total_dd']}%")
+    
+    # 1. Selector de Empresa
+    selected_company = st.sidebar.selectbox("Empresa", list(FIRMS_DATA.keys()))
+    
+    # 2. Selector de Cuenta (Basado en la empresa)
+    selected_account_name = st.sidebar.selectbox("Tipo de Cuenta", list(FIRMS_DATA[selected_company].keys()))
+    
+    # 3. Datos Finales
+    firm = FIRMS_DATA[selected_company][selected_account_name]
+    full_firm_name = f"{selected_company} - {selected_account_name}" # Para guardar en DB
+    
+    # Mostrar Reglas
+    st.sidebar.markdown(f"""
+    **Reglas Cargadas:**
+    * 💰 Costo: **${firm['cost']}**
+    * 📉 Max DD: **{firm['total_dd']}%** (Pausa Diaria: {firm.get('daily_dd', 0)}%)
+    * 🎯 Objetivo: **{firm['profit']}%**
+    * 🎁 Bonus Fondeo: **${firm.get('bonus', 0)}**
+    """)
 
     st.sidebar.header("2. Gestión de Riesgo")
     wr = st.sidebar.slider("Win Rate (%)", 20, 80, 45)
@@ -219,41 +246,46 @@ else:
     trades_day = st.sidebar.number_input("Trades por día", 1, 20, 3)
     comm = st.sidebar.number_input("Comisión ($ por Lote)", 0.0, 10.0, 7.0)
     
-    st.sidebar.markdown("##### Variabilidad del Stop Loss")
-    st.sidebar.caption("El simulador variará el SL en cada trade, afectando el lotaje y las comisiones.")
+    st.sidebar.caption("Variabilidad del Stop Loss (Impacta comisión)")
     c_sl1, c_sl2 = st.sidebar.columns(2)
-    sl_min = c_sl1.number_input("SL Mínimo (Pips)", 1, 100, 5)
-    sl_max = c_sl2.number_input("SL Máximo (Pips)", 1, 200, 15)
+    sl_min = c_sl1.number_input("SL Mín (Pips)", 1, 100, 5)
+    sl_max = c_sl2.number_input("SL Max (Pips)", 1, 200, 15)
 
     if st.button("🚀 Simular Realidad Variable", type="primary", use_container_width=True):
         
-        with st.spinner("Simulando trades con lotaje dinámico..."):
+        with st.spinner(f"Simulando {full_firm_name}..."):
             prob, days, streak, curves, avg_lot = run_dynamic_simulation(
                 firm['size'], risk, wr, rr, firm['profit'], firm['total_dd'],
                 trades_day, comm, sl_min, sl_max
             )
             
-            attempts = 100/prob if prob > 0 else 100
-            inv = attempts * firm['cost']
-            save_plan_db(st.session_state['username'], firm_name, wr, rr, prob, inv)
+            # CÁLCULO DE INVERSIÓN (UNIT ECONOMICS)
+            # Si prob < 100%, se asume que necesitas presupuesto para reintentos
+            attempts_needed = 100/prob if prob > 0 else 100
+            inv = attempts_needed * firm['cost']
+            
+            save_plan_db(st.session_state['username'], full_firm_name, wr, rr, prob, inv)
 
-        # RESULTADOS
+        # --- RESULTADOS VISUALES ---
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        
         kpi1.metric("Probabilidad Éxito", f"{prob:.1f}%")
-        kpi2.metric("Inversión Estimada", f"${inv:,.0f}")
+        
+        # Aquí agregamos el tooltip para explicar la duda del usuario
+        kpi2.metric("Inversión Estimada (Risk Capital)", f"${inv:,.0f}", 
+                    help=f"Si tu cuenta cuesta ${firm['cost']} pero tienes {prob:.1f}% de chance, estadísticamente necesitas presupuesto para {attempts_needed:.1f} intentos.")
+        
         kpi3.metric("Peor Racha", f"{int(streak)} Pérdidas")
         kpi4.metric("Días Estimados", f"{int(days)}")
 
         st.markdown(f"""
         ### ⚖️ Análisis de Impacto
-        Operando con un riesgo del **{risk}%** y SL variable entre **{sl_min} y {sl_max} pips**:
-        - Tu lotaje promedio será de **{avg_lot:.2f} lotes**.
-        - Pagarás un promedio de **${(avg_lot*comm):.2f} USD** en comisiones por trade.
-        
-        *Nota: Cuando el simulador elige un SL de {sl_min} pips, tu comisión se dispara, reduciendo drásticamente tu beneficio neto.*
+        * **Lotaje Promedio:** {avg_lot:.2f} lotes.
+        * **Costo Comisiones:** ${(avg_lot*comm):.2f} USD por trade.
+        * **Bonus Potencial:** Si pasas, recibes un bonus de **${firm.get('bonus', 0)}** (No incluido en el cálculo de riesgo inicial).
         """)
 
-        st.subheader("🔮 Curvas de Equity (Escenarios Posibles)")
+        st.subheader("🔮 Escenarios Posibles")
         chart_data = pd.DataFrame()
         max_len = max(len(c) for c in curves)
         for idx, c in enumerate(curves):
