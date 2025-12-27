@@ -6,7 +6,7 @@ import sqlalchemy
 from sqlalchemy import create_engine, text
 import os
 import time
-import math # Importamos math para redondear intentos hacia arriba
+import math
 
 # --- CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Prop Firm Unit Economics", page_icon="🛡️", layout="wide")
@@ -96,97 +96,126 @@ def get_user_plans(username):
 
 if engine: init_db()
 
-# --- DATOS ESTRUCTURADOS DE EMPRESAS ---
-# Actualizado con The5ers Hyper Growth (1 Step)
+# --- ESTRUCTURA DE DATOS JERÁRQUICA (NUEVA) ---
+# Estructura: Empresa -> Programa -> Tamaño -> Datos
 FIRMS_DATA = {
     "The5ers": {
-        "Hyper Growth - 5K": {
-            "cost": 260, "size": 5000, "daily_dd": 3.0, "total_dd": 6.0, "profit": 10.0, "bonus": 15
+        "High Stakes (2 Step)": {
+            "5K":   {"cost": 39,  "size": 5000,   "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 5},
+            "10K":  {"cost": 78,  "size": 10000,  "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 10},
+            "20K":  {"cost": 165, "size": 20000,  "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 15},
+            "60K":  {"cost": 329, "size": 60000,  "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 25},
+            "100K": {"cost": 545, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 40}
         },
-        "Hyper Growth - 10K": {
-            "cost": 450, "size": 10000, "daily_dd": 3.0, "total_dd": 6.0, "profit": 10.0, "bonus": 25
-        },
-        "Hyper Growth - 20K": {
-            "cost": 850, "size": 20000, "daily_dd": 3.0, "total_dd": 6.0, "profit": 10.0, "bonus": 50
+        "Hyper Growth (1 Step)": {
+            "5K":   {"cost": 260, "size": 5000,   "daily_dd": 3.0, "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 15},
+            "10K":  {"cost": 450, "size": 10000,  "daily_dd": 3.0, "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 25},
+            "20K":  {"cost": 850, "size": 20000,  "daily_dd": 3.0, "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 50}
         }
     },
     "FTMO": {
-        "Swing - 100k": {
-            "cost": 540, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit": 10.0, "bonus": 0
-        },
-        "Normal - 100k": {
-            "cost": 540, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit": 10.0, "bonus": 0
+        "Swing Challenge": {
+            "100K": {"cost": 540, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 10.0, "profit_p2": 5.0, "p1_bonus": 0}
         }
     },
     "FundedNext": {
-        "Stellar - 100k": {
-            "cost": 519, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit": 8.0, "bonus": 0
+        "Stellar 1-Step": {
+            "100K": {"cost": 519, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 0.0, "p1_bonus": 0}
         }
     }
 }
 
-# --- SIMULACIÓN DINÁMICA ---
-def run_dynamic_simulation(balance, risk_pct, win_rate, rr, profit_target, max_total_dd, 
-                          trades_per_day, comm_per_lot, sl_min, sl_max):
+# --- SIMULADOR DE FASE INDIVIDUAL ---
+def simulate_phase(balance, risk_money, win_rate, rr, profit_target_pct, max_total_dd_pct, comm_per_lot, pip_val, sl_min, sl_max):
+    """Retorna True si pasa, False si quema, y la curva de equity"""
+    curr = balance
+    limit_equity = balance - (balance * (max_total_dd_pct/100))
+    target_equity = balance + (balance * (profit_target_pct/100))
+    curve = [curr]
+    trades = 0
     
+    # Límite de trades por seguridad para evitar loops infinitos
+    while curr > limit_equity and curr < target_equity and trades < 1500:
+        trades += 1
+        
+        # Dinámica de Mercado (SL Variable)
+        current_trade_sl = random.uniform(sl_min, sl_max)
+        current_lot_size = risk_money / (current_trade_sl * pip_val)
+        trade_commission = current_lot_size * comm_per_lot
+        
+        if random.random() < (win_rate/100):
+            net_profit = (risk_money * rr) - trade_commission
+            curr += net_profit
+        else:
+            total_loss = risk_money + trade_commission
+            curr -= total_loss
+        
+        curve.append(curr)
+
+    success = curr >= target_equity
+    return success, trades, curve, current_lot_size
+
+# --- SIMULACIÓN GENERAL (1 o 2 Pasos) ---
+def run_full_simulation(firm_data, risk_pct, win_rate, rr, trades_day, comm, sl_min, sl_max):
     n_sims = 1000
     passed_count = 0
-    total_trades_log = []
-    max_losing_streak_log = []
+    total_days_log = []
     equity_curves = [] 
     avg_lots_used_log = []
     
+    balance = firm_data['size']
     risk_money = balance * (risk_pct / 100)
-    pip_value_std = 10 
+    pip_val = 10 
     
-    limit_equity = balance - (balance * (max_total_dd/100))
-    target_equity = balance + (balance * (profit_target/100))
+    # Detectamos si es 1 Step o 2 Step
+    is_two_step = firm_data.get('profit_p2', 0) > 0
     
     for i in range(n_sims):
-        curr = balance
-        trades = 0
-        current_streak = 0
-        max_streak = 0
-        curve = [curr]
+        # --- FASE 1 ---
+        p1_success, p1_trades, p1_curve, last_lot = simulate_phase(
+            balance, risk_money, win_rate, rr, 
+            firm_data['profit_p1'], firm_data['total_dd'], 
+            comm, pip_val, sl_min, sl_max
+        )
         
-        while curr > limit_equity and curr < target_equity and trades < 1000:
-            trades += 1
-            
-            # Dinámica de Mercado
-            current_trade_sl = random.uniform(sl_min, sl_max)
-            
-            current_lot_size = risk_money / (current_trade_sl * pip_value_std)
-            if i < 5: avg_lots_used_log.append(current_lot_size)
-            
-            trade_commission = current_lot_size * comm_per_lot
-            
-            if random.random() < (win_rate/100):
-                gross_profit = risk_money * rr
-                net_profit = gross_profit - trade_commission
-                curr += net_profit
-                current_streak = 0
-            else:
-                total_loss = risk_money + trade_commission
-                curr -= total_loss
-                current_streak += 1
-                if current_streak > max_streak: max_streak = current_streak
-            
-            if i < 20: curve.append(curr)
+        if i < 5: avg_lots_used_log.append(last_lot) # Guardamos muestra de lotaje
+        
+        final_curve = p1_curve
+        total_trades = p1_trades
+        
+        if p1_success:
+            if is_two_step:
+                # --- FASE 2 ---
+                # Reseteamos balance para fase 2
+                p2_success, p2_trades, p2_curve, _ = simulate_phase(
+                    balance, risk_money, win_rate, rr, 
+                    firm_data['profit_p2'], firm_data['total_dd'], 
+                    comm, pip_val, sl_min, sl_max
+                )
                 
-        if curr >= target_equity:
-            passed_count += 1
-            total_trades_log.append(trades)
+                # Unimos curvas visualmente (shift para que se vea continuo)
+                offset = p1_curve[-1] - p2_curve[0]
+                shifted_p2 = [x + offset for x in p2_curve]
+                final_curve = p1_curve + shifted_p2[1:] # Unir
+                total_trades += p2_trades
+                
+                if p2_success:
+                    passed_count += 1
+            else:
+                # Si es 1 Step y pasó la fase 1, es éxito
+                passed_count += 1
         
-        max_losing_streak_log.append(max_streak)
-        if i < 20: equity_curves.append(curve)
+        # Guardar datos para promedios
+        if p1_success: # Solo contamos días si al menos pasó la fase 1 (o todo)
+             total_days_log.append(total_trades / trades_day if trades_day > 0 else 0)
+        
+        if i < 20: equity_curves.append(final_curve)
 
     pass_rate = (passed_count / n_sims) * 100
-    avg_trades = sum(total_trades_log) / len(total_trades_log) if total_trades_log else 0
-    avg_days = avg_trades / trades_per_day if trades_per_day > 0 else 0
-    avg_max_streak = sum(max_losing_streak_log) / len(max_losing_streak_log)
-    avg_lot_metric = sum(avg_lots_used_log) / len(avg_lots_used_log) if avg_lots_used_log else 0
+    avg_days = sum(total_days_log) / len(total_days_log) if total_days_log else 0
+    avg_lot = sum(avg_lots_used_log) / len(avg_lots_used_log) if avg_lots_used_log else 0
     
-    return pass_rate, avg_days, avg_max_streak, equity_curves, avg_lot_metric
+    return pass_rate, avg_days, equity_curves, avg_lot
 
 # --- FRONTEND ---
 if not st.session_state['logged_in']:
@@ -215,22 +244,36 @@ else:
         st.session_state['logged_in'] = False; st.rerun()
     st.markdown("---")
 
-    # --- SIDEBAR (SELECCIÓN JERÁRQUICA) ---
+    # --- SELECTORES JERÁRQUICOS ---
     st.sidebar.header("1. La Empresa")
     
-    selected_company = st.sidebar.selectbox("Empresa", list(FIRMS_DATA.keys()))
-    selected_account_name = st.sidebar.selectbox("Tipo de Cuenta", list(FIRMS_DATA[selected_company].keys()))
+    # Nivel 1: Empresa
+    sel_company = st.sidebar.selectbox("Empresa", list(FIRMS_DATA.keys()))
     
-    firm = FIRMS_DATA[selected_company][selected_account_name]
-    full_firm_name = f"{selected_company} - {selected_account_name}"
+    # Nivel 2: Programa (Tipo de Cuenta)
+    programs_available = list(FIRMS_DATA[sel_company].keys())
+    sel_program = st.sidebar.selectbox("Programa / Desafío", programs_available)
+    
+    # Nivel 3: Tamaño
+    sizes_available = list(FIRMS_DATA[sel_company][sel_program].keys())
+    sel_size = st.sidebar.selectbox("Tamaño de Cuenta", sizes_available)
+    
+    # Obtener Datos Finales
+    firm = FIRMS_DATA[sel_company][sel_program][sel_size]
+    
+    # Identificar nombre completo para DB
+    full_name_db = f"{sel_company} - {sel_program} ({sel_size})"
     
     # Mostrar Reglas
+    is_2step = firm.get('profit_p2', 0) > 0
+    target_text = f"F1: {firm['profit_p1']}% | F2: {firm['profit_p2']}%" if is_2step else f"Objetivo: {firm['profit_p1']}%"
+    
     st.sidebar.markdown(f"""
-    **Reglas Cargadas:**
-    * 💰 Costo Unitario: **${firm['cost']}**
-    * 📉 Max DD: **{firm['total_dd']}%** (Pausa Diaria: {firm.get('daily_dd', 0)}%)
-    * 🎯 Objetivo: **{firm['profit']}%**
-    * 🎁 Bonus Fondeo: **${firm.get('bonus', 0)}**
+    **Reglas del Juego:**
+    * 💰 Costo: **${firm['cost']}**
+    * 📉 DD Max: **{firm['total_dd']}%** | Diario: **{firm.get('daily_dd', 0)}%**
+    * 🎯 {target_text}
+    * 🎁 Payout Fase 1: **${firm.get('p1_bonus', 0)}**
     """)
 
     st.sidebar.header("2. Gestión de Riesgo")
@@ -242,60 +285,50 @@ else:
     trades_day = st.sidebar.number_input("Trades por día", 1, 20, 3)
     comm = st.sidebar.number_input("Comisión ($ por Lote)", 0.0, 10.0, 7.0)
     
-    st.sidebar.caption("Variabilidad del Stop Loss")
     c_sl1, c_sl2 = st.sidebar.columns(2)
     sl_min = c_sl1.number_input("SL Mín (Pips)", 1, 100, 5)
     sl_max = c_sl2.number_input("SL Max (Pips)", 1, 200, 15)
 
     if st.button("🚀 Simular Negocio", type="primary", use_container_width=True):
         
-        with st.spinner(f"Simulando {full_firm_name}..."):
-            prob, days, streak, curves, avg_lot = run_dynamic_simulation(
-                firm['size'], risk, wr, rr, firm['profit'], firm['total_dd'],
-                trades_day, comm, sl_min, sl_max
+        with st.spinner(f"Simulando {full_name_db}..."):
+            prob, days, curves, avg_lot = run_full_simulation(
+                firm, risk, wr, rr, trades_day, comm, sl_min, sl_max
             )
             
-            # --- CÁLCULO DE PRESUPUESTO REALISTA (ENTEROS) ---
-            # Si prob es 50%, necesitas 2 intentos (1/0.5). Usamos math.ceil para redondear hacia arriba.
-            # Ejemplo: Si necesitas 1.1 intentos, tienes que comprar 2 cuentas.
+            # Cálculo de Presupuesto (Unit Economics)
             attempts_needed_math = 100/prob if prob > 0 else 100
             attempts_recommended = math.ceil(attempts_needed_math)
-            
-            # Si la probabilidad es muy alta (>90%), asumimos 1 intento es seguro.
             if prob > 90: attempts_recommended = 1
             
             budget_suggested = attempts_recommended * firm['cost']
             
-            save_plan_db(st.session_state['username'], full_firm_name, wr, rr, prob, budget_suggested)
+            save_plan_db(st.session_state['username'], full_name_db, wr, rr, prob, budget_suggested)
 
-        # --- RESULTADOS VISUALES ---
+        # --- RESULTADOS ---
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         
-        kpi1.metric("Probabilidad Éxito", f"{prob:.1f}%")
-        kpi2.metric("Costo Unitario", f"${firm['cost']}", help="Lo que pagas por UN intento.")
+        kpi1.metric("Probabilidad Total", f"{prob:.1f}%", help="Probabilidad de pasar TODAS las fases requeridas.")
+        kpi2.metric("Costo Cuenta", f"${firm['cost']}")
         
-        # Métrica condicional de alerta
-        color_presupuesto = "normal"
-        label_presupuesto = "Capital Sugerido"
-        if attempts_recommended > 1:
-            label_presupuesto = f"⚠️ Sugerencia: {attempts_recommended} Intentos"
-            color_presupuesto = "inverse" # Lo destaca en rojo/negro
-            
-        kpi3.metric(label_presupuesto, f"${budget_suggested}", 
-                   help=f"Como tu probabilidad es {prob:.1f}%, existe un riesgo real de perder la primera cuenta. Te sugerimos tener capital para {attempts_recommended} intentos.",
-                   delta_color=color_presupuesto)
+        # Lógica de colores para alerta de presupuesto
+        c_delta = "normal"
+        if attempts_recommended > 1: c_delta = "inverse"
+        
+        kpi3.metric(f"Sugerencia: {attempts_recommended} Intentos", f"${budget_suggested}", 
+                   delta_color=c_delta, help="Presupuesto sugerido para garantizar estadísticamente el fondeo.")
                    
         kpi4.metric("Días Estimados", f"{int(days)}")
 
-        st.markdown(f"""
-        ### ⚖️ Análisis de The5ers - Hyper Growth
-        * Estás operando una cuenta de **${firm['size']:,}**.
-        * El costo de cada intento es **${firm['cost']}**.
-        * Según tu probabilidad, **{'te sugerimos tener dinero para reintentar (Back-up)' if attempts_recommended > 1 else 'es muy probable que pases a la primera'}**.
-        * Costo promedio de comisiones: **${(avg_lot*comm):.2f}** por trade.
+        # Información Extra
+        st.info(f"""
+        **💡 Análisis {sel_program}:**
+        * Al pasar la Fase 1, recibirás una repartición de **${firm.get('p1_bonus', 0)}** (The5ers Hub Credits/Cash).
+        * Si pasas todo, recuperas el fee de **${firm['cost']}** en el primer payout.
+        * Estás operando con **{avg_lot:.2f} lotes** promedio.
         """)
 
-        st.subheader("🔮 Curvas de Equity (20 Simulaciones)")
+        st.subheader("🔮 Curvas de Equity (Fase 1 + Fase 2)")
         chart_data = pd.DataFrame()
         max_len = max(len(c) for c in curves)
         for idx, c in enumerate(curves):
