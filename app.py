@@ -8,10 +8,10 @@ import os
 import time
 import math
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Prop Firm Portfolio Pro", page_icon="📈", layout="wide")
 
-# --- ESTADO ---
+# --- GESTIÓN DE ESTADO ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'username' not in st.session_state: st.session_state['username'] = ''
 if 'portfolio' not in st.session_state: st.session_state['portfolio'] = [] 
@@ -33,9 +33,9 @@ def init_db():
             conn.execute(text("CREATE TABLE IF NOT EXISTS plans (id SERIAL PRIMARY KEY, username TEXT, portfolio_summary TEXT, total_investment FLOAT, total_salary FLOAT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"))
             conn.commit()
 
-# --- AUTH ---
+# --- AUTENTICACIÓN ---
 def register_user(u, p):
-    if not engine: return "Error: Sin conexión a BD (Modo Local)"
+    if not engine: return "Error: Sin conexión a Base de Datos (Modo Local)"
     try:
         with engine.connect() as conn:
             if conn.execute(text("SELECT username FROM users WHERE username = :u"), {"u": u}).fetchone(): return "El usuario ya existe"
@@ -69,7 +69,7 @@ def get_history(u):
 
 if engine: init_db()
 
-# --- DATOS DE EMPRESAS ---
+# --- DATOS COMPLETOS DE EMPRESAS ---
 FIRMS_DATA = {
     "The5ers": {
         "High Stakes (2 Step)": {
@@ -100,7 +100,11 @@ FIRMS_DATA = {
 # --- MOTOR DE SIMULACIÓN ---
 def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, target_pct, max_dd_pct, daily_dd_pct, comm, sl_min, sl_max, trades_per_day, is_funded=False):
     curr = current_balance
+    
+    # 1. Objetivo
     target_equity = initial_balance + (initial_balance * (target_pct/100))
+    
+    # 2. Drawdown Máximo ESTATICO (Basado en balance inicial siempre)
     static_limit = initial_balance - (initial_balance * (max_dd_pct/100))
     
     trades = 0
@@ -114,12 +118,15 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
         trades += 1
         trades_today += 1
         
+        # Reset Diario
         if trades_today > trades_per_day:
             day_start_equity = curr 
             trades_today = 1        
             
+        # Límite Diario: Basado en el equity al inicio del día (Standard Industry Practice)
         daily_loss_limit = day_start_equity * (daily_dd_pct / 100)
         
+        # Operativa
         current_sl = random.uniform(sl_min, sl_max)
         risk_money = initial_balance * (risk_pct / 100) 
         
@@ -137,9 +144,12 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
             if is_error: loss_amount *= 1.5 
             curr -= loss_amount
             
+        # Verificaciones
+        # A. Max DD Estático
         if curr <= static_limit:
             return False, trades, curr
             
+        # B. Daily DD (Pérdida desde el inicio del día)
         current_daily_drawdown = day_start_equity - curr
         if current_daily_drawdown >= daily_loss_limit:
             return False, trades, curr
@@ -163,7 +173,7 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     pass_p1 = 0; pass_p2 = 0
     pass_c1 = 0; pass_c2 = 0; pass_c3 = 0
     
-    # Acumuladores individuales para calcular promedios de retiro
+    # Acumuladores de Dinero Real Retirado
     sum_pay1 = 0
     sum_pay2 = 0
     sum_pay3 = 0
@@ -172,42 +182,47 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     
     for _ in range(n_sims):
         # FASE 1
-        ok1, _, bal1 = simulate_phase(firm['size'], firm['size'], risk, wr, rr, firm['profit_p1'], firm['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day)
+        ok1, _, _ = simulate_phase(firm['size'], firm['size'], risk, wr, rr, firm['profit_p1'], firm['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day)
         if not ok1: continue
         pass_p1 += 1
         
-        # FASE 2
+        # FASE 2 (Reset Balance)
         if is_2step:
-            ok2, _, bal2 = simulate_phase(firm['size'], firm['size'], risk, wr, rr, firm['profit_p2'], firm['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day)
+            ok2, _, _ = simulate_phase(firm['size'], firm['size'], risk, wr, rr, firm['profit_p2'], firm['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day)
             if not ok2: continue
             pass_p2 += 1
         else:
             pass_p2 += 1
             
-        # CUENTA FONDEADA - RETIRO 1
+        # --- CUENTA FONDEADA ---
+        
+        # RETIRO 1 (Reset Balance)
         ok_c1, _, bal_c1 = simulate_phase(firm['size'], firm['size'], risk, wr, rr, w_target, firm['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
         if ok_c1:
             pass_c1 += 1
             gross = bal_c1 - firm['size']
             split = gross * 0.80
-            payout1 = split + firm['cost'] + firm.get('p1_bonus', 0)
-            sum_pay1 += payout1
+            # Payout 1 incluye Refund y Bonus
+            pay1 = split + firm['cost'] + firm.get('p1_bonus', 0)
+            sum_pay1 += pay1
             
-            # CUENTA FONDEADA - RETIRO 2 (Reset Balance)
+            # RETIRO 2 (Reset Balance tras Retiro 1)
             ok_c2, _, bal_c2 = simulate_phase(firm['size'], firm['size'], risk, wr, rr, w_target, firm['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
             if ok_c2:
                 pass_c2 += 1
                 gross2 = bal_c2 - firm['size']
-                payout2 = gross2 * 0.80 # Solo split
-                sum_pay2 += payout2
+                # Payout 2 solo Split
+                pay2 = gross2 * 0.80 
+                sum_pay2 += pay2
                 
-                # CUENTA FONDEADA - RETIRO 3 (Reset Balance)
+                # RETIRO 3 (Reset Balance tras Retiro 2)
                 ok_c3, _, bal_c3 = simulate_phase(firm['size'], firm['size'], risk, wr, rr, w_target, firm['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
                 if ok_c3:
                     pass_c3 += 1
                     gross3 = bal_c3 - firm['size']
-                    payout3 = gross3 * 0.80
-                    sum_pay3 += payout3
+                    # Payout 3 solo Split
+                    pay3 = gross3 * 0.80
+                    sum_pay3 += pay3
 
     # Probabilidades
     prob_p1 = (pass_p1/n_sims)*100
@@ -223,34 +238,36 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     inventory = math.ceil(attempts)
     investment = inventory * firm['cost']
     
-    # Promedios de Retiro (Si nadie pasó, es 0)
+    # Promedios de Retiro (Si logras cobrar, cuanto cobras promedio)
     avg_pay1 = sum_pay1 / pass_c1 if pass_c1 > 0 else 0
     avg_pay2 = sum_pay2 / pass_c2 if pass_c2 > 0 else 0
     avg_pay3 = sum_pay3 / pass_c3 if pass_c3 > 0 else 0
     
-    # Sueldo Neto (Ganancia - Inversión) / Tiempo
-    total_expected_return = avg_pay1 + (avg_pay2 * (prob_c2/100)) # Simplificado
-    salary = (avg_pay1 - investment) # Neto primera vuelta
+    # Net Profit del ciclo completo promedio
+    # Promedio acumulado ponderado por probabilidad de llegar
+    total_expected_payout = (sum_pay1 + sum_pay2 + sum_pay3) / n_sims # Valor Esperado Matemático por intento
     
-    # Breakdown visual del Payout 1 (Teórico para el tooltip)
+    # Pero para el usuario mostramos "Si gano, cuanto saco".
+    # Usaremos el promedio de la 1era ganancia como referencia de "Sueldo"
+    salary = (avg_pay1 - investment) 
+    
+    # Desglose Teórico del Payout 1 para mostrar al usuario
     t_gross = firm['size'] * (w_target / 100)
-    est_pay = {
+    est_pay_breakdown = {
         "split": t_gross * 0.80,
         "refund": firm['cost'],
         "bonus": firm.get('p1_bonus', 0),
         "total": (t_gross * 0.80) + firm['cost'] + firm.get('p1_bonus', 0)
     }
     
-    months_time = 3.0 if is_2step else 2.0 
-    
     return {
         "prob_p1": prob_p1, "prob_p2": prob_p2, 
         "prob_c1": prob_c1, "prob_c2": prob_c2, "prob_c3": prob_c3,
         "avg_pay1": avg_pay1, "avg_pay2": avg_pay2, "avg_pay3": avg_pay3,
         "inventory": inventory, "investment": investment,
-        "net_profit": salary, "months": months_time,
+        "net_profit": salary, "months": 3.0 if is_2step else 2.0,
         "is_2step": is_2step,
-        "first_pay_est": est_pay
+        "first_pay_breakdown": est_pay_breakdown
     }
 
 # --- INTERFAZ ---
@@ -331,58 +348,64 @@ else:
         
         st.divider()
         if st.button(f"🚀 Simular Portafolio ({sim_precision} Escenarios)", type="primary", use_container_width=True):
-            with st.spinner(f"Procesando Montecarlo con Drawdown Diario..."):
+            with st.spinner(f"Procesando simulaciones detalladas..."):
                 results = []
                 g_inv = 0; g_net = 0
+                
+                # Acumuladores globales para flujos combinados
+                g_pay1 = 0; g_pay2 = 0; g_pay3 = 0
+                
                 for item in st.session_state['portfolio']:
                     s = run_account_simulation(item['data'], item['params'], sim_precision)
                     g_inv += s['investment']; g_net += s['net_profit']
+                    
+                    # Sumamos al flujo combinado
+                    g_pay1 += s['avg_pay1']
+                    g_pay2 += s['avg_pay2']
+                    g_pay3 += s['avg_pay3']
+                    
                     results.append({"name": item['full_name'], "stats": s})
                 
                 save_plan(st.session_state['username'], f"{len(results)} Cuentas", g_inv, g_net)
                 
+                # --- RESULTADOS CONSOLIDADOS ---
                 st.markdown("### 📊 Resultados Consolidados")
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Inversión Total (Riesgo)", f"${g_inv:,.0f}")
-                m2.metric("Beneficio Neto (Ciclo)", f"${g_net:,.0f}")
+                m2.metric("Beneficio Neto (Ciclo 1)", f"${g_net:,.0f}")
                 roi = (g_net / g_inv * 100) if g_inv > 0 else 0
                 m3.metric("ROI Potencial", f"{roi:.1f}%")
                 
-                st.subheader("📋 Desglose Combinatorio")
-                summary_data = []
-                for res in results:
-                    s = res['stats']
-                    pay1_fmt = f"${s['first_pay_est']['total']:,.0f}"
-                    summary_data.append({
-                        "Cuenta": res['name'],
-                        "Stock Req.": f"{s['inventory']} u.",
-                        "Inversión": f"${s['investment']:,.0f}",
-                        "P. Cobro 1": f"{s['prob_c1']:.1f}%",
-                        "1er Payout": pay1_fmt,
-                        "P. Cobro 3": f"{s['prob_c3']:.1f}%",
-                        "Net Profit": f"${s['net_profit']:,.0f}"
-                    })
-                st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+                # --- NUEVA SECCIÓN: FLUJO COMBINADO ---
+                st.markdown("### 💰 Proyección de Flujo de Caja Combinado")
+                st.caption("Suma de retiros esperados si todas las cuentas del portafolio tienen éxito.")
+                fc1, fc2, fc3 = st.columns(3)
+                fc1.metric("Total Retiro 1", f"${g_pay1:,.0f}", help="Suma de primeros retiros (incluye reembolsos y bonus).")
+                fc2.metric("Total Retiro 2", f"${g_pay2:,.0f}", help="Suma de segundos retiros (solo split).")
+                fc3.metric("Total Retiro 3", f"${g_pay3:,.0f}", help="Suma de terceros retiros (solo split).")
+                
+                st.divider()
 
-                st.subheader("🔍 Detalle de Retención")
+                # --- DESGLOSE INDIVIDUAL ---
+                st.subheader("🔍 Detalle de Retención por Cuenta")
                 for res in results:
                     s = res['stats']
-                    bk = s['first_pay_est']
+                    bk = s['first_pay_breakdown']
                     with st.expander(f"📈 {res['name']} (Prob. 1er Cobro: {s['prob_c1']:.1f}%)"):
-                        c_prob1, c_prob2, c_prob3, c_prob4, c_prob5 = st.columns(5)
-                        c_prob1.metric("1. Fase 1", f"{s['prob_p1']:.1f}%")
-                        c_prob2.metric("2. Fase 2", f"{s['prob_p2']:.1f}%" if s['is_2step'] else "N/A")
+                        c1, c2, c3, c4, c5 = st.columns(5)
+                        c1.metric("1. Fase 1", f"{s['prob_p1']:.1f}%")
+                        c2.metric("2. Fase 2", f"{s['prob_p2']:.1f}%" if s['is_2step'] else "N/A")
                         
-                        # --- MODIFICADO: MUESTRA EL MONTO ($) EN EL DELTA ---
-                        c_prob3.metric("3. Retiro 1", f"{s['prob_c1']:.1f}%", f"${s['avg_pay1']:,.0f}")
-                        c_prob4.metric("4. Retiro 2", f"{s['prob_c2']:.1f}%", f"${s['avg_pay2']:,.0f}")
-                        c_prob5.metric("5. Retiro 3", f"{s['prob_c3']:.1f}%", f"${s['avg_pay3']:,.0f}")
+                        # MONTOS EN VERDE
+                        c3.metric("3. Retiro 1", f"{s['prob_c1']:.1f}%", f"${s['avg_pay1']:,.0f}")
+                        c4.metric("4. Retiro 2", f"{s['prob_c2']:.1f}%", f"${s['avg_pay2']:,.0f}")
+                        c5.metric("5. Retiro 3", f"{s['prob_c3']:.1f}%", f"${s['avg_pay3']:,.0f}")
                         
                         st.markdown("---")
-                        st.caption("💰 **1er Payout Estimado:**")
+                        st.caption("💰 **Desglose del 1er Payout (Teórico según Meta):**")
                         col_pay1, col_pay2, col_pay3, col_pay4 = st.columns(4)
-                        col_pay1.metric("Split", f"${bk['split']:,.0f}")
-                        col_pay2.metric("Refund", f"+${bk['refund']}")
+                        col_pay1.metric("Split (80%)", f"${bk['split']:,.0f}")
+                        col_pay2.metric("Reembolso", f"+${bk['refund']}")
                         col_pay3.metric("Bonus", f"+${bk['bonus']}")
                         col_pay4.metric("TOTAL", f"${bk['total']:,.0f}", delta="Neto")
 
