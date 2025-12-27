@@ -127,12 +127,9 @@ FIRMS_DATA = {
 # --- MOTOR DE SIMULACIÓN ---
 def simulate_phase(balance, risk_money, win_rate, rr, profit_target_pct, max_total_dd_pct, comm_per_lot, pip_val, sl_min, sl_max, is_funded=False):
     curr = balance
-    # En cuenta fondeada, definimos "Exito de cobro" como sobrevivir y hacer al menos 2%
     target_equity = balance + (balance * (profit_target_pct/100)) if not is_funded else balance + (balance * 0.02) 
     limit_equity = balance - (balance * (max_total_dd_pct/100))
     trades = 0
-    
-    # Límite técnico para evitar bucles infinitos
     max_trades_allowed = 2000 
     
     while curr > limit_equity and curr < target_equity and trades < max_trades_allowed:
@@ -154,14 +151,12 @@ def simulate_phase(balance, risk_money, win_rate, rr, profit_target_pct, max_tot
 def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, comm, sl_min, sl_max):
     n_sims = 1000
     
-    pass_p1 = 0
-    pass_p2 = 0 # Si es 1-step, esto será igual a pass_p1
+    pass_p2 = 0 
     pass_payout = 0 
     
     total_trades_p1 = []
     total_trades_p2 = []
     total_trades_payout = []
-    
     total_payout_amount = 0
     
     balance = firm_data['size']
@@ -174,7 +169,6 @@ def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, c
         p1_ok, t1, _ = simulate_phase(balance, risk_money, win_rate, rr, firm_data['profit_p1'], firm_data['total_dd'], comm, pip_val, sl_min, sl_max)
         
         if not p1_ok: continue
-        pass_p1 += 1
         total_trades_p1.append(t1)
             
         # 2. FASE 2
@@ -189,63 +183,43 @@ def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, c
         
         total_trades_p2.append(trades_this_p2)
         
-        # 3. FASE FONDEADA (Hasta primer cobro)
+        # 3. FASE FONDEADA
         funded_ok, t3, final_balance = simulate_phase(balance, risk_money, win_rate, rr, 0, firm_data['total_dd'], comm, pip_val, sl_min, sl_max, is_funded=True)
         
         if funded_ok:
             pass_payout += 1
             total_trades_payout.append(t3)
-            
             profit = final_balance - balance
             payout_val = (profit * 0.8) + firm_data['cost'] + firm_data.get('p1_bonus', 0)
             total_payout_amount += payout_val
 
-    # --- ESTADÍSTICAS DE TIEMPO Y NEGOCIO ---
-    
-    # Probabilidades
-    prob_funded = (pass_p2 / n_sims) * 100
     prob_cash = (pass_payout / n_sims) * 100
     
-    # Tiempo Promedio (Días de Trading)
+    # Tiempo
     avg_trades_p1 = sum(total_trades_p1) / len(total_trades_p1) if total_trades_p1 else 0
     avg_trades_p2 = sum(total_trades_p2) / len(total_trades_p2) if total_trades_p2 else 0
     avg_trades_pay = sum(total_trades_payout) / len(total_trades_payout) if total_trades_payout else 0
-    
-    # Convertir Trades a Días de Calendario (Aprox 20 días trading = 1 mes calendario)
     total_trading_days = (avg_trades_p1 + avg_trades_p2 + avg_trades_pay) / trades_per_day if trades_per_day > 0 else 999
-    
-    # Meses Reales hasta Liquidez (Asumiendo pausas, fines de semana, etc)
     months_to_liquidity = total_trading_days / 20 
     
     # Dinero
     avg_first_payout = total_payout_amount / pass_payout if pass_payout > 0 else 0
-    
-    # Unit Economics
     attempts_needed = 100 / prob_cash if prob_cash > 0 else 100
-    inventory_needed = math.ceil(attempts_needed) # Cuentas a comprar
+    inventory_needed = math.ceil(attempts_needed) 
     total_investment = inventory_needed * firm_data['cost']
     
-    # ROI Mensualizado
-    # Profit Neto = Payout - InversionTotal
-    # ROI Mensual = Profit Neto / Meses que tardaste
     net_profit = avg_first_payout - total_investment
     monthly_salary_equiv = net_profit / months_to_liquidity if months_to_liquidity > 0 else 0
 
     return {
-        "prob_cash": prob_cash,
-        "inventory": inventory_needed,
-        "investment": total_investment,
-        "months_time": months_to_liquidity,
-        "first_payout": avg_first_payout,
-        "net_profit": net_profit,
-        "monthly_salary": monthly_salary_equiv,
-        "trading_days_total": total_trading_days
+        "prob_cash": prob_cash, "inventory": inventory_needed, "investment": total_investment,
+        "months_time": months_to_liquidity, "first_payout": avg_first_payout,
+        "net_profit": net_profit, "monthly_salary": monthly_salary_equiv, "trading_days_total": total_trading_days
     }
 
 # --- FRONTEND ---
 if not st.session_state['logged_in']:
     st.title("🛡️ Prop Firm Business Planner")
-    # (Mismo código de login que antes...)
     tab1, tab2 = st.tabs(["Entrar", "Crear Cuenta"])
     with tab1:
         u = st.text_input("Usuario", key="l_u")
@@ -279,13 +253,19 @@ else:
     full_name_db = f"{sel_company} - {sel_program} ({sel_size})"
     
     st.sidebar.header("2. Tu Operativa (Insumos)")
-    trades_day = st.sidebar.number_input("Trades por Día", 0.1, 20.0, 2.0, help="Frecuencia real promedio")
+    
+    # --- AJUSTE: INPUTS ENTEROS Y DECIMALES ---
+    trades_day = st.sidebar.number_input("Trades por Día", min_value=1, max_value=50, value=3, step=1, help="Números enteros solamente")
+    
     wr = st.sidebar.slider("Win Rate (%)", 20, 80, 45)
-    rr = st.sidebar.slider("Ratio R:R", 0.5, 5.0, 2.0)
-    risk = st.sidebar.slider("Riesgo por Trade (%)", 0.1, 3.0, 1.0)
+    
+    # Format %.1f para 1 decimal
+    rr = st.sidebar.slider("Ratio R:R", 0.5, 5.0, 2.0, step=0.1, format="%.1f")
+    risk = st.sidebar.slider("Riesgo por Trade (%)", 0.1, 3.0, 1.0, step=0.1, format="%.1f")
     
     st.sidebar.header("3. Costos Variables")
-    comm = st.sidebar.number_input("Comisión ($/Lote)", 0.0, 10.0, 7.0)
+    comm = st.sidebar.number_input("Comisión ($/Lote)", 0.0, 20.0, 7.0, step=0.1, format="%.1f")
+    
     c_sl1, c_sl2 = st.sidebar.columns(2)
     sl_min = c_sl1.number_input("SL Mín", 1, 100, 5)
     sl_max = c_sl2.number_input("SL Max", 1, 200, 15)
@@ -307,64 +287,45 @@ else:
             stats = run_business_simulation(firm, risk, wr, rr, trades_day, comm, sl_min, sl_max)
             save_plan_db(st.session_state['username'], full_name_db, wr, rr, stats['prob_cash'], stats['investment'])
 
-        # --- RESULTADOS: ENFOQUE EMPRESARIAL ---
-        
+        # --- RESULTADOS ---
         st.divider()
         
-        # 1. INVENTARIO (CUANTAS COMPRAR)
+        # 1. INVENTARIO
         st.subheader("1. Estrategia de Inversión (Inventory)")
-        
         inv_col1, inv_col2, inv_col3 = st.columns(3)
-        
-        inv_col1.metric("Probabilidad Real de Cobro", f"{stats['prob_cash']:.1f}%", 
-                       help="Probabilidad de pasar todas las fases y realizar el primer retiro.")
-        
-        inv_col2.metric("Stock Necesario (Cuentas)", f"{stats['inventory']} Unidades", 
-                       help="Para garantizar estadísticamente el éxito, debes tener presupuesto para comprar esta cantidad de cuentas.")
-        
-        inv_col3.metric("Capital de Riesgo Total", f"${stats['investment']}", 
-                       f"Buffer de {stats['inventory']} intentos", delta_color="inverse")
+        inv_col1.metric("Probabilidad Real de Cobro", f"{stats['prob_cash']:.1f}%")
+        inv_col2.metric("Stock Necesario (Cuentas)", f"{stats['inventory']} Unidades")
+        inv_col3.metric("Capital de Riesgo Total", f"${stats['investment']}", f"Buffer de {stats['inventory']} intentos", delta_color="inverse")
 
-        # 2. TIEMPO (CUANTO TARDARÉ)
+        # 2. TIEMPO
         st.subheader("2. Tiempo hasta Liquidez (Time to Cash)")
-        
         time_col1, time_col2 = st.columns(2)
         
         months_clean = f"{stats['months_time']:.1f} Meses"
         days_clean = f"{int(stats['trading_days_total'])} Días Operativos"
         
-        time_color = "normal"
-        if stats['months_time'] > 4: time_color = "inverse" # Alerta si tarda mucho
+        time_col1.metric("Tiempo Estimado (Cuenta Ganadora)", months_clean, days_clean)
         
-        time_col1.metric("Tiempo Estimado hasta 1er Cobro", months_clean, days_clean, delta_color=time_color)
-        
-        time_msg = "⏱️ Velocidad Óptima"
-        if stats['months_time'] > 6:
-            time_msg = "⚠️ Demasiado Lento: El costo de oportunidad es alto."
-            st.warning(f"OJO: Tardarías **{months_clean}** en cobrar. Considera aumentar la frecuencia operativa (Trades/día) o el riesgo para acelerar el flujo de caja, aunque aumente el riesgo de quema.")
-        else:
-            st.success(f"✅ Buen Ritmo: Cobrar en **{months_clean}** es un ciclo de negocio saludable.")
+        # NOTA ACLARATORIA SOBRE EL TIEMPO SECUENCIAL
+        st.caption(f"""
+        ℹ️ **Nota sobre el Tiempo:** Este cálculo representa el tiempo que tarda **la cuenta exitosa** en llegar al cobro. 
+        Si operas tus {stats['inventory']} intentos de forma **secuencial** (una después de quemar la otra), tu tiempo real podría extenderse hasta **{(stats['months_time'] * stats['inventory']):.1f} Meses**.
+        """)
 
-        # 3. RENTABILIDAD (SUELDO)
+        # 3. RENTABILIDAD
         st.subheader("3. Viabilidad Financiera (Bottom Line)")
-        
         fin_col1, fin_col2, fin_col3 = st.columns(3)
-        
-        fin_col1.metric("Primer Payout Estimado", f"${stats['first_payout']:,.0f}", help="Ingreso Bruto esperado")
-        
-        fin_col2.metric("Beneficio Neto (Post-Costos)", f"${stats['net_profit']:,.0f}", 
-                       help="Payout - Inversión Total en cuentas")
-        
-        fin_col3.metric("Salario Mensual Equivalente", f"${stats['monthly_salary']:,.0f} / mes", 
-                       help="Tu beneficio neto dividido por el tiempo que tardaste. ¿Vale la pena tu tiempo por este sueldo?")
+        fin_col1.metric("Primer Payout Estimado", f"${stats['first_payout']:,.0f}")
+        fin_col2.metric("Beneficio Neto (Post-Costos)", f"${stats['net_profit']:,.0f}")
+        fin_col3.metric("Salario Mensual Equivalente", f"${stats['monthly_salary']:,.0f} / mes")
         
         if stats['monthly_salary'] < 500:
-            st.error("❌ Negocio NO Viable: Tu esfuerzo paga menos que un salario mínimo. Revisa tu estrategia.")
+            st.error("❌ Negocio NO Viable: Tu esfuerzo paga menos que un salario mínimo.")
         elif stats['monthly_salary'] > 2000:
             st.balloons()
-            st.success("🚀 Negocio Altamente Rentable: ¡Tienes una máquina de hacer dinero!")
+            st.success("🚀 Negocio Altamente Rentable")
         else:
-            st.info("⚠️ Negocio Marginal: Es rentable, pero revisa si compensa tu tiempo.")
+            st.info("⚠️ Negocio Marginal: Rentable pero ajustado.")
 
     st.divider()
     with st.expander("📜 Historial de Planes"):
