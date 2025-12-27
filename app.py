@@ -10,6 +10,12 @@ import time
 # --- CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Prop Firm Unit Economics", page_icon="🛡️", layout="wide")
 
+# --- ⚠️ FIX: INICIALIZAR SESIÓN AQUÍ (ANTES DE TODO) ---
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+if 'username' not in st.session_state:
+    st.session_state['username'] = ''
+
 # --- BASE DE DATOS ---
 db_url = os.getenv("DATABASE_URL")
 engine = None
