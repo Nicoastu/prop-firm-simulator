@@ -6,11 +6,12 @@ import sqlalchemy
 from sqlalchemy import create_engine, text
 import os
 import time
+import math # Importamos math para redondear intentos hacia arriba
 
 # --- CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Prop Firm Unit Economics", page_icon="🛡️", layout="wide")
 
-# --- INICIALIZAR SESIÓN (Evita el KeyError) ---
+# --- INICIALIZAR SESIÓN ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'username' not in st.session_state:
@@ -96,7 +97,7 @@ def get_user_plans(username):
 if engine: init_db()
 
 # --- DATOS ESTRUCTURADOS DE EMPRESAS ---
-# Ahora usamos un diccionario anidado para facilitar la selección
+# Actualizado con The5ers Hyper Growth (1 Step)
 FIRMS_DATA = {
     "The5ers": {
         "Hyper Growth - 5K": {
@@ -154,7 +155,6 @@ def run_dynamic_simulation(balance, risk_pct, win_rate, rr, profit_target, max_t
             # Dinámica de Mercado
             current_trade_sl = random.uniform(sl_min, sl_max)
             
-            # Cálculo de lotaje (sin lógica de margen por ahora)
             current_lot_size = risk_money / (current_trade_sl * pip_value_std)
             if i < 5: avg_lots_used_log.append(current_lot_size)
             
@@ -218,20 +218,16 @@ else:
     # --- SIDEBAR (SELECCIÓN JERÁRQUICA) ---
     st.sidebar.header("1. La Empresa")
     
-    # 1. Selector de Empresa
     selected_company = st.sidebar.selectbox("Empresa", list(FIRMS_DATA.keys()))
-    
-    # 2. Selector de Cuenta (Basado en la empresa)
     selected_account_name = st.sidebar.selectbox("Tipo de Cuenta", list(FIRMS_DATA[selected_company].keys()))
     
-    # 3. Datos Finales
     firm = FIRMS_DATA[selected_company][selected_account_name]
-    full_firm_name = f"{selected_company} - {selected_account_name}" # Para guardar en DB
+    full_firm_name = f"{selected_company} - {selected_account_name}"
     
     # Mostrar Reglas
     st.sidebar.markdown(f"""
     **Reglas Cargadas:**
-    * 💰 Costo: **${firm['cost']}**
+    * 💰 Costo Unitario: **${firm['cost']}**
     * 📉 Max DD: **{firm['total_dd']}%** (Pausa Diaria: {firm.get('daily_dd', 0)}%)
     * 🎯 Objetivo: **{firm['profit']}%**
     * 🎁 Bonus Fondeo: **${firm.get('bonus', 0)}**
@@ -246,12 +242,12 @@ else:
     trades_day = st.sidebar.number_input("Trades por día", 1, 20, 3)
     comm = st.sidebar.number_input("Comisión ($ por Lote)", 0.0, 10.0, 7.0)
     
-    st.sidebar.caption("Variabilidad del Stop Loss (Impacta comisión)")
+    st.sidebar.caption("Variabilidad del Stop Loss")
     c_sl1, c_sl2 = st.sidebar.columns(2)
     sl_min = c_sl1.number_input("SL Mín (Pips)", 1, 100, 5)
     sl_max = c_sl2.number_input("SL Max (Pips)", 1, 200, 15)
 
-    if st.button("🚀 Simular Realidad Variable", type="primary", use_container_width=True):
+    if st.button("🚀 Simular Negocio", type="primary", use_container_width=True):
         
         with st.spinner(f"Simulando {full_firm_name}..."):
             prob, days, streak, curves, avg_lot = run_dynamic_simulation(
@@ -259,33 +255,47 @@ else:
                 trades_day, comm, sl_min, sl_max
             )
             
-            # CÁLCULO DE INVERSIÓN (UNIT ECONOMICS)
-            # Si prob < 100%, se asume que necesitas presupuesto para reintentos
-            attempts_needed = 100/prob if prob > 0 else 100
-            inv = attempts_needed * firm['cost']
+            # --- CÁLCULO DE PRESUPUESTO REALISTA (ENTEROS) ---
+            # Si prob es 50%, necesitas 2 intentos (1/0.5). Usamos math.ceil para redondear hacia arriba.
+            # Ejemplo: Si necesitas 1.1 intentos, tienes que comprar 2 cuentas.
+            attempts_needed_math = 100/prob if prob > 0 else 100
+            attempts_recommended = math.ceil(attempts_needed_math)
             
-            save_plan_db(st.session_state['username'], full_firm_name, wr, rr, prob, inv)
+            # Si la probabilidad es muy alta (>90%), asumimos 1 intento es seguro.
+            if prob > 90: attempts_recommended = 1
+            
+            budget_suggested = attempts_recommended * firm['cost']
+            
+            save_plan_db(st.session_state['username'], full_firm_name, wr, rr, prob, budget_suggested)
 
         # --- RESULTADOS VISUALES ---
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
         
         kpi1.metric("Probabilidad Éxito", f"{prob:.1f}%")
+        kpi2.metric("Costo Unitario", f"${firm['cost']}", help="Lo que pagas por UN intento.")
         
-        # Aquí agregamos el tooltip para explicar la duda del usuario
-        kpi2.metric("Inversión Estimada (Risk Capital)", f"${inv:,.0f}", 
-                    help=f"Si tu cuenta cuesta ${firm['cost']} pero tienes {prob:.1f}% de chance, estadísticamente necesitas presupuesto para {attempts_needed:.1f} intentos.")
-        
-        kpi3.metric("Peor Racha", f"{int(streak)} Pérdidas")
+        # Métrica condicional de alerta
+        color_presupuesto = "normal"
+        label_presupuesto = "Capital Sugerido"
+        if attempts_recommended > 1:
+            label_presupuesto = f"⚠️ Sugerencia: {attempts_recommended} Intentos"
+            color_presupuesto = "inverse" # Lo destaca en rojo/negro
+            
+        kpi3.metric(label_presupuesto, f"${budget_suggested}", 
+                   help=f"Como tu probabilidad es {prob:.1f}%, existe un riesgo real de perder la primera cuenta. Te sugerimos tener capital para {attempts_recommended} intentos.",
+                   delta_color=color_presupuesto)
+                   
         kpi4.metric("Días Estimados", f"{int(days)}")
 
         st.markdown(f"""
-        ### ⚖️ Análisis de Impacto
-        * **Lotaje Promedio:** {avg_lot:.2f} lotes.
-        * **Costo Comisiones:** ${(avg_lot*comm):.2f} USD por trade.
-        * **Bonus Potencial:** Si pasas, recibes un bonus de **${firm.get('bonus', 0)}** (No incluido en el cálculo de riesgo inicial).
+        ### ⚖️ Análisis de The5ers - Hyper Growth
+        * Estás operando una cuenta de **${firm['size']:,}**.
+        * El costo de cada intento es **${firm['cost']}**.
+        * Según tu probabilidad, **{'te sugerimos tener dinero para reintentar (Back-up)' if attempts_recommended > 1 else 'es muy probable que pases a la primera'}**.
+        * Costo promedio de comisiones: **${(avg_lot*comm):.2f}** por trade.
         """)
 
-        st.subheader("🔮 Escenarios Posibles")
+        st.subheader("🔮 Curvas de Equity (20 Simulaciones)")
         chart_data = pd.DataFrame()
         max_len = max(len(c) for c in curves)
         for idx, c in enumerate(curves):
@@ -296,4 +306,4 @@ else:
     st.divider()
     with st.expander("📜 Historial"):
         planes = get_user_plans(st.session_state['username'])
-        if planes: st.dataframe(pd.DataFrame(planes, columns=["Empresa", "Prob %", "Inversión $", "Fecha"]), use_container_width=True)
+        if planes: st.dataframe(pd.DataFrame(planes, columns=["Empresa", "Prob %", "Presupuesto $", "Fecha"]), use_container_width=True)
