@@ -81,7 +81,7 @@ FIRMS_DATA = {
     }
 }
 
-# --- MOTOR DE SIMULACIÓN ---
+# --- MOTOR DE SIMULACIÓN (Corregido: Daily DD Fijo) ---
 def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, target_pct, max_dd_pct, daily_dd_pct, comm, sl_min, sl_max, trades_per_day, is_funded=False):
     curr = current_balance
     target_equity = initial_balance + (initial_balance * (target_pct/100))
@@ -94,16 +94,20 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
     day_start_equity = curr
     trades_today = 0
     
+    # CORRECCIÓN: El límite de pérdida diaria es un MONTO FIJO basado en el Balance Inicial de la cuenta.
+    # Ejemplo: 5% de 100k = $5,000. Siempre.
+    fixed_daily_loss_amount = initial_balance * (daily_dd_pct / 100)
+    
     while curr > static_limit and curr < target_equity and trades < max_trades:
         trades += 1
         trades_today += 1
         
+        # Reset Diario
         if trades_today > trades_per_day:
             day_start_equity = curr 
             trades_today = 1        
             
-        daily_loss_limit = day_start_equity * (daily_dd_pct / 100)
-        
+        # Operativa
         current_sl = random.uniform(sl_min, sl_max)
         risk_money = initial_balance * (risk_pct / 100) 
         
@@ -121,11 +125,17 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
             if is_error: loss_amount *= 1.5 
             curr -= loss_amount
             
+        # Verificaciones
+        # A. Max DD Estático
         if curr <= static_limit:
             return False, trades, curr
             
+        # B. Daily DD (Reseteable, pero límite fijo)
+        # La pérdida del día es: (Con cuánto empecé hoy) - (Cuánto tengo ahora)
         current_daily_drawdown = day_start_equity - curr
-        if current_daily_drawdown >= daily_loss_limit:
+        
+        # Si esa pérdida supera los $5,000 fijos (ejemplo), mueres.
+        if current_daily_drawdown >= fixed_daily_loss_amount:
             return False, trades, curr
             
     return curr >= target_equity, trades, curr
@@ -156,7 +166,7 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     pass_p1 = 0; pass_p2 = 0
     pass_c1 = 0; pass_c2 = 0; pass_c3 = 0
     
-    # Listas para guardar la cantidad de trades de los que PASAN cada etapa
+    # Listas para guardar la cantidad de trades
     trades_p1 = []
     trades_p2 = []
     trades_c1 = []
@@ -219,14 +229,13 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     prob_c2 = (pass_c2/n_sims)*100
     prob_c3 = (pass_c3/n_sims)*100
     
-    # TIEMPOS (Meses Operativos)
+    # TIEMPOS
     time_p1 = calculate_time_metrics(trades_p1, trades_day)
     time_p2 = calculate_time_metrics(trades_p2, trades_day) if is_2step else 0
     time_c1 = calculate_time_metrics(trades_c1, trades_day)
     time_c2 = calculate_time_metrics(trades_c2, trades_day)
     time_c3 = calculate_time_metrics(trades_c3, trades_day)
     
-    # Tiempo Total acumulado hasta el primer cobro
     total_time_to_cash = time_p1 + time_p2 + time_c1
     
     # Financials
@@ -372,7 +381,6 @@ else:
                         # Fila 1: Probabilidad y Tiempo
                         c1, c2, c3, c4, c5 = st.columns(5)
                         
-                        # Formato: "90% (1.2 Meses)"
                         c1.metric("1. Fase 1", f"{s['prob_p1']:.1f}%", f"⏱ {s['time_p1']:.1f} Meses", delta_color="off")
                         
                         p2_label = f"{s['prob_p2']:.1f}%" if s['is_2step'] else "N/A"
