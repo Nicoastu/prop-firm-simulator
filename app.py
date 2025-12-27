@@ -9,7 +9,7 @@ import time
 import math
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Prop Firm Portfolio Pro", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Prop Firm Portfolio Pro", page_icon="📈", layout="wide")
 
 # --- GESTIÓN DE ESTADO ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
@@ -69,30 +69,30 @@ def get_history(u):
 
 if engine: init_db()
 
-# --- DATOS DE EMPRESAS ---
+# --- DATOS COMPLETOS DE EMPRESAS ---
 FIRMS_DATA = {
     "The5ers": {
         "High Stakes (2 Step)": {
-            "5K":   {"cost": 39,  "size": 5000,   "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 5},
-            "10K":  {"cost": 78,  "size": 10000,  "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 10},
-            "20K":  {"cost": 165, "size": 20000,  "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 15},
-            "60K":  {"cost": 329, "size": 60000,  "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 25},
-            "100K": {"cost": 545, "size": 100000, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 40}
+            "5K":   {"cost": 39,  "size": 5000,   "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 5},
+            "10K":  {"cost": 78,  "size": 10000,  "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 10},
+            "20K":  {"cost": 165, "size": 20000,  "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 15},
+            "60K":  {"cost": 329, "size": 60000,  "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 25},
+            "100K": {"cost": 545, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 40}
         },
         "Hyper Growth (1 Step)": {
-            "5K":   {"cost": 260, "size": 5000,   "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 15},
-            "10K":  {"cost": 450, "size": 10000,  "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 25},
-            "20K":  {"cost": 850, "size": 20000,  "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 50}
+            "5K":   {"cost": 260, "size": 5000,   "daily_dd": 3.0, "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 15},
+            "10K":  {"cost": 450, "size": 10000,  "daily_dd": 3.0, "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 25},
+            "20K":  {"cost": 850, "size": 20000,  "daily_dd": 3.0, "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 50}
         }
     },
     "FTMO": {
         "Swing Challenge": {
-            "100K": {"cost": 540, "size": 100000, "total_dd": 10.0, "profit_p1": 10.0, "profit_p2": 5.0, "p1_bonus": 0}
+            "100K": {"cost": 540, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 10.0, "profit_p2": 5.0, "p1_bonus": 0}
         }
     },
     "FundedNext": {
         "Stellar 1-Step": {
-            "100K": {"cost": 519, "size": 100000, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 0.0, "p1_bonus": 0}
+            "100K": {"cost": 519, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 0.0, "p1_bonus": 0}
         }
     }
 }
@@ -123,7 +123,7 @@ def simulate_phase(balance, risk_pct, win_rate, rr, target_pct, max_dd_pct, comm
             
     return curr >= target_equity, trades, curr
 
-def run_account_simulation(account_data, strategy_params):
+def run_account_simulation(account_data, strategy_params, n_sims_requested):
     wr = strategy_params['win_rate']
     rr = strategy_params['rr']
     risk = strategy_params['risk']
@@ -133,16 +133,16 @@ def run_account_simulation(account_data, strategy_params):
     
     sl_min = 5; sl_max = 15 
     firm = account_data
-    n_sims = 1000 # Precisión estándar
+    n_sims = n_sims_requested # USAMOS EL VALOR DEL USUARIO
     
     # Contadores
     pass_p1 = 0
     pass_p2 = 0
-    pass_cash_1 = 0 # Primer cobro
-    pass_cash_2 = 0 # Segundo cobro
-    pass_cash_3 = 0 # Tercer cobro
+    pass_cash_1 = 0 
+    pass_cash_2 = 0 
+    pass_cash_3 = 0 
     
-    total_accumulated_payout = 0 # Suma de todo el dinero extraído en las sims exitosas
+    total_accumulated_payout = 0 
     
     is_2step = firm.get('profit_p2', 0) > 0
     
@@ -160,38 +160,34 @@ def run_account_simulation(account_data, strategy_params):
         else:
             pass_p2 += 1
             
-        # --- MES 1: Primer Retiro ---
-        # Objetivo: Llegar al % de retiro configurado sin quemar
+        # --- MES 1 ---
         ok_m1, t3, final_bal_m1 = simulate_phase(firm['size'], risk, wr, rr, w_target, firm['total_dd'], comm, sl_min, sl_max, is_funded=True)
-        
         if ok_m1:
             pass_cash_1 += 1
-            # Cálculo Payout 1
+            # Payout 1 (Con Bonus y Refund)
+            # Calculamos Profit Bruto basado en el retiro
             gross = final_bal_m1 - firm['size']
             split = gross * 0.80
             pay1 = split + firm['cost'] + firm.get('p1_bonus', 0)
             total_accumulated_payout += pay1
             
-            # --- MES 2: Segundo Retiro ---
-            # Asumimos reset de cuenta al balance inicial
+            # --- MES 2 ---
             ok_m2, _, final_bal_m2 = simulate_phase(firm['size'], risk, wr, rr, w_target, firm['total_dd'], comm, sl_min, sl_max, is_funded=True)
-            
             if ok_m2:
                 pass_cash_2 += 1
                 gross2 = final_bal_m2 - firm['size']
-                pay2 = gross2 * 0.80 # Solo split, sin refund ni bonus
+                pay2 = gross2 * 0.80
                 total_accumulated_payout += pay2
                 
-                # --- MES 3: Tercer Retiro ---
+                # --- MES 3 ---
                 ok_m3, _, final_bal_m3 = simulate_phase(firm['size'], risk, wr, rr, w_target, firm['total_dd'], comm, sl_min, sl_max, is_funded=True)
-                
                 if ok_m3:
                     pass_cash_3 += 1
                     gross3 = final_bal_m3 - firm['size']
                     pay3 = gross3 * 0.80
                     total_accumulated_payout += pay3
 
-    # --- ESTADÍSTICAS FINALES ---
+    # --- ESTADÍSTICAS ---
     prob_p1 = (pass_p1/n_sims)*100
     prob_p2 = (pass_p2/n_sims)*100 if is_2step else 100.0
     
@@ -199,28 +195,35 @@ def run_account_simulation(account_data, strategy_params):
     prob_c2 = (pass_cash_2/n_sims)*100
     prob_c3 = (pass_cash_3/n_sims)*100
     
-    # Unit Economics (basado en éxito del 1er retiro)
     attempts = 100/prob_c1 if prob_c1 > 0 else 100
     inventory = math.ceil(attempts)
     investment = inventory * firm['cost']
     
-    # EV Total = Total Dinero Sacado / Total Intentos (Sims)
-    # Ajustamos para mostrar el "Promedio de cobro acumulado" para alguien que logra pasar
-    # Promedio acumulado por CADA cuenta ganadora (ciclo completo)
-    avg_total_payout_per_winner = total_accumulated_payout / pass_cash_1 if pass_cash_1 > 0 else 0
+    avg_total_payout = total_accumulated_payout / pass_cash_1 if pass_cash_1 > 0 else 0
+    salary = (avg_total_payout - investment) 
     
-    # Tiempo estimado (aproximado para MVP)
-    months_to_liquidity = 1.0 # Minimo 1 mes
+    # Datos para breakdown visual del primer pago
+    # (Usamos valores teóricos del target para mostrar al usuario lo que "debería" pasar)
+    target_gross = firm['size'] * (w_target / 100)
+    target_split = target_gross * 0.80
+    first_pay_breakdown = {
+        "split": target_split,
+        "refund": firm['cost'],
+        "bonus": firm.get('p1_bonus', 0),
+        "total": target_split + firm['cost'] + firm.get('p1_bonus', 0)
+    }
     
-    salary = (avg_total_payout_per_winner - investment) # Net Profit total del ciclo
+    # Tiempo aproximado (1 mes por fase + 1 mes primer cobro)
+    months_time = 3.0 if is_2step else 2.0 
     
     return {
         "prob_p1": prob_p1, "prob_p2": prob_p2, 
         "prob_c1": prob_c1, "prob_c2": prob_c2, "prob_c3": prob_c3,
         "inventory": inventory, "investment": investment,
-        "total_payout_avg": avg_total_payout_per_winner, 
-        "net_profit": salary,
-        "is_2step": is_2step
+        "total_payout_avg": avg_total_payout, 
+        "net_profit": salary, "months": months_time,
+        "is_2step": is_2step,
+        "first_pay_est": first_pay_breakdown
     }
 
 # --- INTERFAZ ---
@@ -241,7 +244,7 @@ if not st.session_state['logged_in']:
                 if st.form_submit_button("Crear Cuenta", use_container_width=True):
                     if nu and np: 
                         r = register_user(nu, np)
-                        if r=="OK": st.success("Creado")
+                        if r=="OK": st.success("Creado");
                         else: st.error(r)
 else:
     # --- APP ---
@@ -251,16 +254,44 @@ else:
     if c_user.button("Salir"): st.session_state['logged_in']=False; st.rerun()
     st.markdown("---")
     
-    # SIDEBAR: CATALOGO
+    # SIDEBAR
     with st.sidebar:
-        st.header("1. Agregar Activos")
+        st.header("1. Configuración Global")
+        st.caption("Afecta a todas las simulaciones.")
+        # SELECTOR DE PRECISIÓN (NUEVO)
+        sim_precision = st.select_slider(
+            "Precisión de Simulación",
+            options=[500, 1000, 5000],
+            value=1000,
+            format_func=lambda x: f"{x} Escenarios (Rápido)" if x==500 else (f"{x} Escenarios (Estándar)" if x==1000 else f"{x} Escenarios (Alta Precisión)")
+        )
+        
+        st.divider()
+        
+        st.header("2. Agregar Activos")
         s_firm = st.selectbox("Empresa", list(FIRMS_DATA.keys()))
         s_prog = st.selectbox("Programa", list(FIRMS_DATA[s_firm].keys()))
         s_size = st.selectbox("Capital", list(FIRMS_DATA[s_firm][s_prog].keys()))
         
+        # --- VISUALIZACIÓN DE REGLAS (RESTAURADA Y MEJORADA) ---
         d = FIRMS_DATA[s_firm][s_prog][s_size]
-        st.caption(f"💰 Costo: ${d['cost']} | 🎯 F1: {d['profit_p1']}% | 📉 DD: {d['total_dd']}%")
+        is_2s = d.get('profit_p2', 0) > 0
         
+        with st.container(border=True):
+            st.markdown(f"**📜 Reglas: {s_firm} {s_size}**")
+            
+            col_r1, col_r2 = st.columns(2)
+            col_r1.markdown(f"💰 Costo: **${d['cost']}**")
+            col_r2.markdown(f"📉 DD Max: **{d['total_dd']}%**")
+            
+            col_r3, col_r4 = st.columns(2)
+            col_r3.markdown(f"📉 DD Diario: **{d.get('daily_dd', 'N/A')}%**")
+            col_r4.markdown(f"🎁 Bonus F1: **${d.get('p1_bonus', 0)}**")
+            
+            st.markdown("---")
+            st.markdown(f"🎯 **Objetivos:** F1: `{d['profit_p1']}%` | F2: `{'{}%'.format(d['profit_p2']) if is_2s else 'N/A'}`")
+            st.caption("Reembolso: 100% en 1er Retiro | Split: 80%")
+
         if st.button("➕ Agregar al Portafolio", type="primary", use_container_width=True):
             st.session_state['portfolio'].append({
                 "id": int(time.time()*1000),
@@ -293,14 +324,17 @@ else:
                     st.rerun()
         
         st.divider()
-        if st.button("🚀 Simular Portafolio Completo", type="primary", use_container_width=True):
-            with st.spinner("Simulando proyecciones a 3 meses..."):
+        
+        # BOTÓN CON FEEDBACK DE PRECISIÓN
+        btn_label = f"🚀 Simular Portafolio ({sim_precision} Escenarios/Cuenta)"
+        if st.button(btn_label, type="primary", use_container_width=True):
+            with st.spinner(f"Procesando Montecarlo de alta fidelidad..."):
                 results = []
                 g_inv = 0
                 g_net = 0
                 
                 for item in st.session_state['portfolio']:
-                    s = run_account_simulation(item['data'], item['params'])
+                    s = run_account_simulation(item['data'], item['params'], sim_precision)
                     g_inv += s['investment']
                     g_net += s['net_profit']
                     results.append({"name": item['full_name'], "stats": s})
@@ -311,31 +345,36 @@ else:
                 st.markdown("### 📊 Resultados Consolidados")
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Inversión Total (Riesgo)", f"${g_inv:,.0f}", help="Costo de todas las cuentas necesarias para asegurar éxito.")
-                m2.metric("Beneficio Neto Esperado", f"${g_net:,.0f}", help="Ganancia total proyectada tras recuperar inversión.")
+                m2.metric("Beneficio Neto (Ciclo)", f"${g_net:,.0f}", help="Ganancia total proyectada tras recuperar inversión.")
                 roi = (g_net / g_inv * 100) if g_inv > 0 else 0
                 m3.metric("ROI Potencial", f"{roi:.1f}%")
                 
                 st.subheader("📋 Desglose Combinatorio")
                 
-                # Tabla Resumen Comparativa
+                # TABLA RESUMEN COMPARATIVA
                 summary_data = []
                 for res in results:
                     s = res['stats']
+                    # Payout formateado
+                    pay1_fmt = f"${s['first_pay_est']['total']:,.0f}"
                     summary_data.append({
                         "Cuenta": res['name'],
-                        "Stock": f"{s['inventory']} u.",
+                        "Stock Req.": f"{s['inventory']} u.",
                         "Inversión": f"${s['investment']:,.0f}",
                         "Prob. Cobro 1": f"{s['prob_c1']:.1f}%",
+                        "1er Payout": pay1_fmt,
                         "Prob. Cobro 3": f"{s['prob_c3']:.1f}%",
-                        "Beneficio Neto": f"${s['net_profit']:,.0f}"
+                        "Net Profit": f"${s['net_profit']:,.0f}"
                     })
                 st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
 
                 st.subheader("🔍 Detalle de Retención")
                 for res in results:
                     s = res['stats']
+                    bk = s['first_pay_est']
+                    
                     with st.expander(f"📈 {res['name']} (Prob. 1er Cobro: {s['prob_c1']:.1f}%)"):
-                        # Embudo Horizontal
+                        # Embudo Horizontal de Probabilidades
                         c_prob1, c_prob2, c_prob3, c_prob4, c_prob5 = st.columns(5)
                         c_prob1.metric("1. Fase 1", f"{s['prob_p1']:.1f}%")
                         c_prob2.metric("2. Fase 2", f"{s['prob_p2']:.1f}%" if s['is_2step'] else "N/A")
@@ -343,7 +382,15 @@ else:
                         c_prob4.metric("4. Retiro 2", f"{s['prob_c2']:.1f}%", "Beneficio")
                         c_prob5.metric("5. Retiro 3", f"{s['prob_c3']:.1f}%", "Consistencia")
                         
-                        st.caption(f"Payout Total Acumulado (Promedio de ganadores): ${s['total_payout_avg']:,.0f}")
+                        st.markdown("---")
+                        
+                        # Desglose Financiero del 1er Pago
+                        st.caption("💰 **Estructura del Primer Payout Estimado:**")
+                        col_pay1, col_pay2, col_pay3, col_pay4 = st.columns(4)
+                        col_pay1.metric("Profit Split (80%)", f"${bk['split']:,.0f}")
+                        col_pay2.metric("Reembolso Fee", f"+${bk['refund']}")
+                        col_pay3.metric("Bonus Fondeo", f"+${bk['bonus']}")
+                        col_pay4.metric("TOTAL A RECIBIR", f"${bk['total']:,.0f}", delta="Neto")
 
     st.divider()
     with st.expander("Historial"):
