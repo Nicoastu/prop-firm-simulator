@@ -33,9 +33,9 @@ def init_db():
             conn.execute(text("CREATE TABLE IF NOT EXISTS plans (id SERIAL PRIMARY KEY, username TEXT, portfolio_summary TEXT, total_investment FLOAT, total_salary FLOAT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"))
             conn.commit()
 
-# --- FUNCIONES DE AUTENTICACIÓN (REPARADAS) ---
+# --- FUNCIONES DE AUTENTICACIÓN ---
 def register_user(u, p):
-    if not engine: return "Error: Sin conexión a Base de Datos"
+    if not engine: return "Error: Sin conexión a Base de Datos (Local Mode)"
     try:
         with engine.connect() as conn:
             if conn.execute(text("SELECT username FROM users WHERE username = :u"), {"u": u}).fetchone(): return "El usuario ya existe"
@@ -45,7 +45,7 @@ def register_user(u, p):
     except Exception as e: return f"Error DB: {str(e)}"
 
 def login_user(u, p):
-    if not engine: return False
+    if not engine: return False # En modo local sin DB, esto fallará. En Railway funcionará.
     try:
         with engine.connect() as conn:
             res = conn.execute(text("SELECT password FROM users WHERE username = :u"), {"u": u}).fetchone()
@@ -69,7 +69,7 @@ def get_history(u):
 
 if engine: init_db()
 
-# --- DATOS COMPLETOS DE EMPRESAS (REGLAS RESTAURADAS) ---
+# --- DATOS COMPLETOS DE EMPRESAS ---
 FIRMS_DATA = {
     "The5ers": {
         "High Stakes (2 Step)": {
@@ -129,17 +129,17 @@ def simulate_phase(balance, risk_pct, win_rate, rr, target_pct, max_dd_pct, comm
             
     return curr >= target_equity, trades, curr
 
-def run_account_simulation(account_data, strategy_params, global_ops):
-    # Desempaquetar estrategia específica
+def run_account_simulation(account_data, strategy_params):
+    # Desempaquetar estrategia específica de ESTA cuenta
     wr = strategy_params['win_rate']
     rr = strategy_params['rr']
     risk = strategy_params['risk']
     w_target = strategy_params['withdrawal_target']
+    comm = strategy_params['comm']
+    trades_day = strategy_params['trades_day']
     
-    # Inputs globales (Operativa del Trader)
-    comm = global_ops['comm']
-    trades_day = global_ops['trades_day']
-    sl_min = 5; sl_max = 15 # Simplificado para MVP, pero podría ser input
+    # SL estático para MVP, pero podría ser input
+    sl_min = 5; sl_max = 15 
     
     firm = account_data
     n_sims = 800
@@ -176,9 +176,9 @@ def run_account_simulation(account_data, strategy_params, global_ops):
             pass_cash += 1
             total_trades += sim_trades
             
-            # Cálculo Payout (Profit + Refund + Bonus)
+            # Cálculo Payout
             gross_profit = final_bal - firm['size']
-            net_profit_share = gross_profit * 0.80 # Split genérico 80%
+            net_profit_share = gross_profit * 0.80 
             total_pay = net_profit_share + firm['cost'] + firm.get('p1_bonus', 0)
             total_payouts += total_pay
 
@@ -208,41 +208,41 @@ def run_account_simulation(account_data, strategy_params, global_ops):
 # --- INTERFAZ DE USUARIO ---
 if not st.session_state['logged_in']:
     st.title("💼 Prop Firm Portfolio Manager")
-    st.markdown("Plataforma profesional para la gestión de riesgos y proyección de beneficios en cuentas de fondeo.")
     
-    tab_login, tab_reg = st.tabs(["Iniciar Sesión", "Registrarse"])
-    
-    # --- LOGIN CORREGIDO ---
-    with tab_login:
-        with st.form("login_form"):
-            u = st.text_input("Usuario")
-            p = st.text_input("Contraseña", type="password")
-            submit = st.form_submit_button("Entrar", type="primary")
-            
-            if submit:
-                if login_user(u, p):
-                    st.session_state['logged_in'] = True
-                    st.session_state['username'] = u
-                    st.rerun()
-                else:
-                    st.error("❌ Usuario o contraseña incorrectos")
+    # Contenedor centrado para el login
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        tab_login, tab_reg = st.tabs(["Iniciar Sesión", "Registrarse"])
+        
+        with tab_login:
+            with st.form("login_form"):
+                u = st.text_input("Usuario")
+                p = st.text_input("Contraseña", type="password")
+                submit = st.form_submit_button("Entrar", type="primary", use_container_width=True)
+                
+                if submit:
+                    if login_user(u, p):
+                        st.session_state['logged_in'] = True
+                        st.session_state['username'] = u
+                        st.rerun()
+                    else:
+                        st.error("❌ Usuario o contraseña incorrectos")
 
-    # --- REGISTRO CORREGIDO ---
-    with tab_reg:
-        with st.form("register_form"):
-            nu = st.text_input("Elige un Usuario")
-            np = st.text_input("Elige una Contraseña", type="password")
-            submit_reg = st.form_submit_button("Crear Cuenta")
-            
-            if submit_reg:
-                if nu and np:
-                    msg = register_user(nu, np)
-                    if msg == "OK": 
-                        st.success("✅ Cuenta creada. Por favor inicia sesión.")
-                    else: 
-                        st.error(f"❌ Error: {msg}")
-                else:
-                    st.warning("⚠️ Completa todos los campos")
+        with tab_reg:
+            with st.form("register_form"):
+                nu = st.text_input("Elige un Usuario")
+                np = st.text_input("Elige una Contraseña", type="password")
+                submit_reg = st.form_submit_button("Crear Cuenta", use_container_width=True)
+                
+                if submit_reg:
+                    if nu and np:
+                        msg = register_user(nu, np)
+                        if msg == "OK": 
+                            st.success("✅ Cuenta creada. Por favor inicia sesión.")
+                        else: 
+                            st.error(f"❌ Error: {msg}")
+                    else:
+                        st.warning("⚠️ Completa todos los campos")
 
 else:
     # --- APLICACIÓN PRINCIPAL ---
@@ -256,94 +256,91 @@ else:
         st.rerun()
     st.markdown("---")
     
-    # --- BARRA LATERAL ---
+    # --- BARRA LATERAL: AGREGAR CUENTAS ---
     with st.sidebar:
-        st.header("1. Configuración Global")
-        st.caption("Parámetros de tu ejecución operativa diaria.")
-        
-        # INPUTS FALTANTES AGREGADOS AQUÍ
-        gl_trades = st.number_input("Trades Promedio / Día", 1, 50, 3, help="Frecuencia operativa")
-        gl_comm = st.number_input("Comisión ($/Lote)", 0.0, 15.0, 7.0, step=0.5, help="Costo del broker por lote ida y vuelta")
-        
-        st.divider()
-        st.header("2. Agregar Cuentas")
+        st.header("1. Agregar Cuenta")
+        st.caption("Selecciona una empresa y añádela a tu portafolio.")
         
         s_firm = st.selectbox("Empresa", list(FIRMS_DATA.keys()))
         s_prog = st.selectbox("Programa", list(FIRMS_DATA[s_firm].keys()))
         s_size = st.selectbox("Capital", list(FIRMS_DATA[s_firm][s_prog].keys()))
         
-        # Pre-visualización de reglas antes de agregar
+        # Pre-visualización de reglas
         sel_data = FIRMS_DATA[s_firm][s_prog][s_size]
-        with st.expander("ℹ️ Ver Reglas de Cuenta"):
+        with st.expander("ℹ️ Ver Reglas"):
             st.markdown(f"""
             - **Costo:** ${sel_data['cost']}
-            - **DD Total:** {sel_data['total_dd']}% | **Diario:** {sel_data.get('daily_dd', 'N/A')}%
-            - **Target F1:** {sel_data['profit_p1']}% | **F2:** {sel_data.get('profit_p2', 'N/A')}%
-            - **Bonus:** ${sel_data.get('p1_bonus', 0)}
+            - **DD Total:** {sel_data['total_dd']}% 
+            - **DD Diario:** {sel_data.get('daily_dd', 'N/A')}%
+            - **Target:** {sel_data['profit_p1']}% / {sel_data.get('profit_p2', 'N/A')}%
             """)
         
-        if st.button("➕ Añadir al Portafolio", type="secondary"):
+        if st.button("➕ Añadir al Portafolio", type="primary", use_container_width=True):
             new_item = {
                 "id": int(time.time()*1000),
                 "full_name": f"{s_firm} {s_prog} ({s_size})",
                 "data": sel_data,
-                "params": { # Defaults
-                    "win_rate": 45, "rr": 2.0, "risk": 1.0, "withdrawal_target": 3.0
+                "params": { 
+                    # Defaults
+                    "win_rate": 45, "rr": 2.0, "risk": 1.0, 
+                    "withdrawal_target": 3.0, "trades_day": 3, "comm": 7.0
                 }
             }
             st.session_state['portfolio'].append(new_item)
             st.toast("Cuenta agregada exitosamente")
 
-    # --- BODY ---
+    # --- BODY: CONFIGURACIÓN Y RESULTADOS ---
     
     if not st.session_state['portfolio']:
-        st.info("👈 Tu portafolio está vacío. Configura tu operativa global y agrega cuentas desde la barra lateral.")
+        st.info("👈 Tu portafolio está vacío. Agrega tu primera cuenta desde la barra lateral.")
     else:
-        # 1. GESTIÓN DE PORTAFOLIO
-        st.subheader(f"🎛️ Estrategia de Portafolio ({len(st.session_state['portfolio'])} Activos)")
+        # 1. GESTIÓN DE PORTAFOLIO (CONFIGURACIÓN OPERATIVA)
+        st.subheader(f"🎛️ Configuración de Operativa ({len(st.session_state['portfolio'])} Cuentas)")
         
         for i, item in enumerate(st.session_state['portfolio']):
-            # Usamos un expander para editar cada cuenta
-            with st.expander(f"⚙️ {item['full_name']} - Editar Estrategia", expanded=True):
+            # Usamos expander para cada cuenta, abierto por defecto
+            with st.expander(f"⚙️ {item['full_name']} - Editar Parámetros", expanded=True):
                 
-                # Muestra reglas clave arriba de los inputs
-                d = item['data']
-                st.caption(f"💰 Costo: ${d['cost']} | 📉 DD: {d['total_dd']}% | 🎯 Targets: {d['profit_p1']}% / {d.get('profit_p2','-')}%")
-                
-                c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 0.2])
+                c1, c2, c3, c4 = st.columns(4)
                 
                 k = str(item['id'])
+                # Fila 1: Estrategia Pura
                 item['params']['win_rate'] = c1.number_input("WinRate %", 10, 90, item['params']['win_rate'], key=f"wr_{k}")
                 item['params']['rr'] = c2.number_input("Ratio R:R", 0.1, 10.0, item['params']['rr'], step=0.1, key=f"rr_{k}")
                 item['params']['risk'] = c3.number_input("Riesgo %", 0.1, 5.0, item['params']['risk'], step=0.1, key=f"rk_{k}")
-                item['params']['withdrawal_target'] = c4.number_input("Meta Retiro %", 0.5, 20.0, item['params']['withdrawal_target'], step=0.5, key=f"wt_{k}", help="Objetivo de beneficio para retirar")
+                item['params']['withdrawal_target'] = c4.number_input("Meta Retiro %", 0.5, 20.0, item['params']['withdrawal_target'], step=0.5, key=f"wt_{k}")
+
+                # Fila 2: Operativa y Costos
+                c5, c6, c7 = st.columns([1, 1, 2])
+                item['params']['trades_day'] = c5.number_input("Trades/Día", 1, 50, item['params']['trades_day'], step=1, key=f"td_{k}", help="Frecuencia operativa (Entero)")
+                item['params']['comm'] = c6.number_input("Comisión ($)", 0.0, 20.0, item['params']['comm'], step=0.5, key=f"cm_{k}", help="Costo por lote (Round trip)")
                 
-                if c5.button("🗑️", key=f"del_{k}", help="Eliminar cuenta"):
+                if c7.button("🗑️ Eliminar Cuenta", key=f"del_{k}"):
                     st.session_state['portfolio'].pop(i)
                     st.rerun()
 
         st.divider()
         
-        # 2. BOTÓN DE ACCIÓN
-        if st.button("🚀 Ejecutar Simulación Profesional", type="primary", use_container_width=True):
+        # 2. SIMULACIÓN
+        if st.button("🚀 Ejecutar Simulación de Portafolio", type="primary", use_container_width=True):
             
-            with st.spinner("Procesando Montecarlo para todo el portafolio..."):
+            with st.spinner("Procesando Montecarlo individual para cada cuenta..."):
                 global_inv = 0
                 global_sal = 0
                 results = []
                 
-                global_ops = {"comm": gl_comm, "trades_day": gl_trades}
-                
                 for item in st.session_state['portfolio']:
-                    stats = run_account_simulation(item['data'], item['params'], global_ops)
+                    # Pasamos los parámetros independientes de cada cuenta
+                    stats = run_account_simulation(item['data'], item['params'])
+                    
                     global_inv += stats['investment']
                     global_sal += stats['salary']
                     results.append({"name": item['full_name'], "stats": stats, "params": item['params']})
                 
                 save_plan(st.session_state['username'], f"{len(results)} Cuentas", global_inv, global_sal)
 
-            # 3. RESULTADOS
-            st.markdown("### 📊 Resultados Consolidados")
+            # 3. RESULTADOS GLOBALES
+            st.markdown("### 🌍 Resultados Consolidados")
             
             kc1, kc2, kc3 = st.columns(3)
             kc1.metric("Capital de Riesgo Total", f"${global_inv:,.0f}", help="Inversión total requerida para asegurar estadísticamente el éxito.")
@@ -352,19 +349,19 @@ else:
             roi = (global_sal * 12 / global_inv * 100) if global_inv > 0 else 0
             kc3.metric("ROI Anual Proyectado", f"{roi:.1f}%")
 
-            st.subheader("🔍 Desglose por Cuenta")
+            # 4. DESGLOSE DETALLADO (EXPANDERS)
+            st.subheader("🔍 Desglose Detallado por Cuenta")
             
             for res in results:
                 s = res['stats']
                 # Icono de estado
                 status = "🟢" if s['salary'] > 0 else "🔴"
                 
-                with st.container(border=True):
-                    head_col1, head_col2 = st.columns([3, 1])
-                    head_col1.markdown(f"**{status} {res['name']}**")
-                    head_col2.caption(f"Prob. Cobro: {s['prob_cash']:.1f}%")
+                # Usamos expander para minimizar/maximizar detalle
+                with st.expander(f"{status} {res['name']} | Prob. Cobro: {s['prob_cash']:.1f}% | Sueldo: ${s['salary']:,.0f}", expanded=False):
                     
                     # Embudo
+                    st.caption("🔻 Embudo de Probabilidad")
                     col_step1, col_step2, col_step3 = st.columns(3)
                     col_step1.metric("1. Fase 1", f"{s['prob_p1']:.1f}%")
                     col_step2.metric("2. Fase 2", f"{s['prob_p2']:.1f}%" if s['prob_p2'] < 100 else "N/A")
@@ -374,10 +371,10 @@ else:
                     
                     # Datos Económicos
                     ec1, ec2, ec3, ec4 = st.columns(4)
-                    ec1.metric("Stock (Intentos)", f"{s['inventory']}")
-                    ec2.metric("Inversión", f"${s['investment']:,.0f}")
-                    ec3.metric("1er Retiro", f"${s['payout']:,.0f}")
-                    ec4.metric("Sueldo Neto", f"${s['salary']:,.0f}")
+                    ec1.metric("Stock Sugerido", f"{s['inventory']} Cuentas")
+                    ec2.metric("Inversión Riesgo", f"${s['investment']:,.0f}")
+                    ec3.metric("1er Retiro Est.", f"${s['payout']:,.0f}")
+                    ec4.metric("Tiempo a Liquidez", f"{s['months']:.1f} Meses")
 
     # HISTORIAL
     st.divider()
