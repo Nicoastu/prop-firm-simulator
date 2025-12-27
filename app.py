@@ -9,13 +9,15 @@ import time
 import math
 
 # --- CONFIGURACIÓN INICIAL ---
-st.set_page_config(page_title="Prop Firm Business Planner", page_icon="💼", layout="wide")
+st.set_page_config(page_title="Prop Firm Business Portfolio", page_icon="💼", layout="wide")
 
-# --- INICIALIZAR SESIÓN ---
+# --- GESTIÓN DE ESTADO (SESIÓN + PORTAFOLIO) ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'username' not in st.session_state:
     st.session_state['username'] = ''
+if 'portfolio' not in st.session_state:
+    st.session_state['portfolio'] = [] # Aquí guardaremos las cuentas seleccionadas
 
 # --- BASE DE DATOS ---
 db_url = os.getenv("DATABASE_URL")
@@ -43,11 +45,9 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS plans (
                     id SERIAL PRIMARY KEY,
                     username TEXT,
-                    firm_name TEXT,
-                    win_rate FLOAT,
-                    risk_reward FLOAT,
-                    pass_prob FLOAT,
-                    investment_needed FLOAT,
+                    portfolio_summary TEXT,
+                    total_investment FLOAT,
+                    total_salary FLOAT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """))
@@ -75,14 +75,14 @@ def login_user_manual(username, password):
         return False
     except: return False
 
-def save_plan_db(username, firm, wr, rr, prob, inv):
+def save_plan_db(username, summary, inv, salary):
     if engine:
         try:
             with engine.connect() as conn:
                 conn.execute(text("""
-                    INSERT INTO plans (username, firm_name, win_rate, risk_reward, pass_prob, investment_needed)
-                    VALUES (:u, :f, :w, :r, :p, :i)
-                """), {"u": username, "f": firm, "w": wr, "r": rr, "p": prob, "i": inv})
+                    INSERT INTO plans (username, portfolio_summary, total_investment, total_salary)
+                    VALUES (:u, :s, :i, :sal)
+                """), {"u": username, "s": summary, "i": inv, "sal": salary})
                 conn.commit()
         except: pass
 
@@ -90,13 +90,13 @@ def get_user_plans(username):
     if not engine: return []
     try:
         with engine.connect() as conn:
-            result = conn.execute(text("SELECT firm_name, pass_prob, investment_needed, created_at FROM plans WHERE username = :u ORDER BY created_at DESC LIMIT 10"), {"u": username})
+            result = conn.execute(text("SELECT portfolio_summary, total_investment, total_salary, created_at FROM plans WHERE username = :u ORDER BY created_at DESC LIMIT 10"), {"u": username})
             return result.fetchall()
     except: return []
 
 if engine: init_db()
 
-# --- DATOS JERÁRQUICOS ---
+# --- DATOS DE EMPRESAS ---
 FIRMS_DATA = {
     "The5ers": {
         "High Stakes (2 Step)": {
@@ -124,7 +124,7 @@ FIRMS_DATA = {
     }
 }
 
-# --- MOTOR DE SIMULACIÓN ---
+# --- MOTOR DE SIMULACIÓN (NÚCLEO) ---
 def simulate_phase(balance, risk_money, win_rate, rr, profit_target_pct, max_total_dd_pct, comm_per_lot, pip_val, sl_min, sl_max, is_funded=False):
     curr = balance
     target_equity = balance + (balance * (profit_target_pct/100)) if not is_funded else balance + (balance * 0.02) 
@@ -149,14 +149,12 @@ def simulate_phase(balance, risk_money, win_rate, rr, profit_target_pct, max_tot
     return success, trades, curr
 
 def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, comm, sl_min, sl_max):
+    # Esta función simula UNA cuenta específica
     n_sims = 1000
-    
     pass_p2 = 0 
     pass_payout = 0 
     
-    total_trades_p1 = []
-    total_trades_p2 = []
-    total_trades_payout = []
+    total_trades_accum = []
     total_payout_amount = 0
     
     balance = firm_data['size']
@@ -165,30 +163,33 @@ def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, c
     is_two_step = firm_data.get('profit_p2', 0) > 0
     
     for _ in range(n_sims):
+        sim_trades = 0
+        
         # 1. FASE 1
         p1_ok, t1, _ = simulate_phase(balance, risk_money, win_rate, rr, firm_data['profit_p1'], firm_data['total_dd'], comm, pip_val, sl_min, sl_max)
-        
-        if not p1_ok: continue
-        total_trades_p1.append(t1)
+        sim_trades += t1
+        if not p1_ok: 
+            total_trades_accum.append(sim_trades)
+            continue
             
         # 2. FASE 2
-        trades_this_p2 = 0
         if is_two_step:
             p2_ok, t2, _ = simulate_phase(balance, risk_money, win_rate, rr, firm_data['profit_p2'], firm_data['total_dd'], comm, pip_val, sl_min, sl_max)
-            if not p2_ok: continue
+            sim_trades += t2
+            if not p2_ok: 
+                total_trades_accum.append(sim_trades)
+                continue
             pass_p2 += 1
-            trades_this_p2 = t2
         else:
             pass_p2 += 1
         
-        total_trades_p2.append(trades_this_p2)
-        
         # 3. FASE FONDEADA
         funded_ok, t3, final_balance = simulate_phase(balance, risk_money, win_rate, rr, 0, firm_data['total_dd'], comm, pip_val, sl_min, sl_max, is_funded=True)
+        sim_trades += t3
+        total_trades_accum.append(sim_trades)
         
         if funded_ok:
             pass_payout += 1
-            total_trades_payout.append(t3)
             profit = final_balance - balance
             payout_val = (profit * 0.8) + firm_data['cost'] + firm_data.get('p1_bonus', 0)
             total_payout_amount += payout_val
@@ -196,10 +197,8 @@ def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, c
     prob_cash = (pass_payout / n_sims) * 100
     
     # Tiempo
-    avg_trades_p1 = sum(total_trades_p1) / len(total_trades_p1) if total_trades_p1 else 0
-    avg_trades_p2 = sum(total_trades_p2) / len(total_trades_p2) if total_trades_p2 else 0
-    avg_trades_pay = sum(total_trades_payout) / len(total_trades_payout) if total_trades_payout else 0
-    total_trading_days = (avg_trades_p1 + avg_trades_p2 + avg_trades_pay) / trades_per_day if trades_per_day > 0 else 999
+    avg_trades_total = sum(total_trades_accum) / len(total_trades_accum) if total_trades_accum else 0
+    total_trading_days = avg_trades_total / trades_per_day if trades_per_day > 0 else 999
     months_to_liquidity = total_trading_days / 20 
     
     # Dinero
@@ -214,12 +213,14 @@ def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, c
     return {
         "prob_cash": prob_cash, "inventory": inventory_needed, "investment": total_investment,
         "months_time": months_to_liquidity, "first_payout": avg_first_payout,
-        "net_profit": net_profit, "monthly_salary": monthly_salary_equiv, "trading_days_total": total_trading_days
+        "net_profit": net_profit, "monthly_salary": monthly_salary_equiv, "trading_days_total": total_trading_days,
+        "raw_cost": firm_data['cost']
     }
 
 # --- FRONTEND ---
 if not st.session_state['logged_in']:
-    st.title("🛡️ Prop Firm Business Planner")
+    st.title("💼 Prop Firm Business Planner")
+    # ... (Login Code Identical)
     tab1, tab2 = st.tabs(["Entrar", "Crear Cuenta"])
     with tab1:
         u = st.text_input("Usuario", key="l_u")
@@ -233,101 +234,146 @@ if not st.session_state['logged_in']:
         np = st.text_input("Nueva Pass", type="password", key="r_p")
         if st.button("Registrar"):
             msg = register_user(nu, np)
-            if msg == "OK": st.success("Creado. Ingresa en la pestaña Entrar.")
+            if msg == "OK": st.success("Creado.")
             else: st.error(msg)
 else:
-    # --- DASHBOARD EMPRESARIAL ---
+    # --- DASHBOARD DE PORTAFOLIO ---
     col_h1, col_h2 = st.columns([3,1])
-    col_h1.title("💼 Prop Firm Business Planner")
-    col_h2.write(f"Empresario: **{st.session_state['username']}**")
+    col_h1.title("💼 Prop Firm Portfolio Planner")
+    col_h2.write(f"Trader: **{st.session_state['username']}**")
     if col_h2.button("Cerrar Sesión"):
         st.session_state['logged_in'] = False; st.rerun()
     st.markdown("---")
 
-    # SIDEBAR
-    st.sidebar.header("1. El Producto (Cuenta)")
-    sel_company = st.sidebar.selectbox("Empresa", list(FIRMS_DATA.keys()))
-    sel_program = st.sidebar.selectbox("Programa", list(FIRMS_DATA[sel_company].keys()))
-    sel_size = st.sidebar.selectbox("Capital", list(FIRMS_DATA[sel_company][sel_program].keys()))
-    firm = FIRMS_DATA[sel_company][sel_program][sel_size]
-    full_name_db = f"{sel_company} - {sel_program} ({sel_size})"
+    # --- SIDEBAR: TU HABILIDAD (CONSTANTE) ---
+    st.sidebar.header("1. Tu Habilidad (Global)")
+    st.sidebar.caption("Estas métricas se aplicarán a todas las cuentas.")
     
-    st.sidebar.header("2. Tu Operativa (Insumos)")
-    
-    # --- AJUSTE: INPUTS ENTEROS Y DECIMALES ---
-    trades_day = st.sidebar.number_input("Trades por Día", min_value=1, max_value=50, value=3, step=1, help="Números enteros solamente")
-    
+    trades_day = st.sidebar.number_input("Trades por Día", min_value=1, max_value=50, value=3, step=1)
     wr = st.sidebar.slider("Win Rate (%)", 20, 80, 45)
-    
-    # Format %.1f para 1 decimal
     rr = st.sidebar.slider("Ratio R:R", 0.5, 5.0, 2.0, step=0.1, format="%.1f")
     risk = st.sidebar.slider("Riesgo por Trade (%)", 0.1, 3.0, 1.0, step=0.1, format="%.1f")
-    
-    st.sidebar.header("3. Costos Variables")
     comm = st.sidebar.number_input("Comisión ($/Lote)", 0.0, 20.0, 7.0, step=0.1, format="%.1f")
     
     c_sl1, c_sl2 = st.sidebar.columns(2)
     sl_min = c_sl1.number_input("SL Mín", 1, 100, 5)
     sl_max = c_sl2.number_input("SL Max", 1, 200, 15)
 
-    # REGLAS VISIBLES
-    st.markdown("### 📋 Ficha Técnica del Activo")
-    is_2step = firm.get('profit_p2', 0) > 0
-    target_txt = f"{firm['profit_p1']}% (F1) / {firm['profit_p2']}% (F2)" if is_2step else f"{firm['profit_p1']}%"
+    # --- BARRA LATERAL: CONSTRUCTOR DE PORTAFOLIO ---
+    st.sidebar.divider()
+    st.sidebar.header("2. Armar Portafolio")
     
-    r1, r2, r3, r4 = st.columns(4)
-    r1.metric("Costo Unitario", f"${firm['cost']}", border=True)
-    r2.metric("Objetivos", target_txt, border=True)
-    r3.metric("Drawdown Max", f"{firm['total_dd']}%", f"Diario: {firm.get('daily_dd',0)}%", border=True)
-    r4.metric("Capital Nominal", f"${firm['size']:,}", border=True)
+    sel_company = st.sidebar.selectbox("Empresa", list(FIRMS_DATA.keys()))
+    sel_program = st.sidebar.selectbox("Programa", list(FIRMS_DATA[sel_company].keys()))
+    sel_size = st.sidebar.selectbox("Capital", list(FIRMS_DATA[sel_company][sel_program].keys()))
+    
+    # Botón para añadir
+    if st.sidebar.button("➕ Agregar Cuenta al Portafolio"):
+        firm_details = FIRMS_DATA[sel_company][sel_program][sel_size]
+        item = {
+            "name": f"{sel_company} {sel_program} ({sel_size})",
+            "data": firm_details,
+            "id": len(st.session_state['portfolio'])
+        }
+        st.session_state['portfolio'].append(item)
+        st.success("Agregado")
+    
+    # Botón para limpiar
+    if st.sidebar.button("🗑️ Limpiar Portafolio"):
+        st.session_state['portfolio'] = []
+        st.rerun()
 
-    if st.button("🚀 Generar Plan de Negocios", type="primary", use_container_width=True):
+    # --- ÁREA PRINCIPAL ---
+    
+    # 1. MOSTRAR PORTAFOLIO ACTUAL
+    if len(st.session_state['portfolio']) == 0:
+        st.info("👈 Comienza agregando cuentas en la barra lateral para simular tu estrategia de inversión.")
+    else:
+        st.subheader("📦 Tu Portafolio de Inversión")
         
-        with st.spinner("Calculando tiempos, costos y proyecciones de flujo de caja..."):
-            stats = run_business_simulation(firm, risk, wr, rr, trades_day, comm, sl_min, sl_max)
-            save_plan_db(st.session_state['username'], full_name_db, wr, rr, stats['prob_cash'], stats['investment'])
-
-        # --- RESULTADOS ---
+        # Mostrar cuentas como tarjetas pequeñas o lista
+        p_cols = st.columns(3)
+        for idx, item in enumerate(st.session_state['portfolio']):
+            with p_cols[idx % 3]:
+                st.markdown(f"""
+                **{item['name']}**
+                * Costo: ${item['data']['cost']}
+                * DD: {item['data']['total_dd']}%
+                """, unsafe_allow_html=True)
+        
         st.divider()
-        
-        # 1. INVENTARIO
-        st.subheader("1. Estrategia de Inversión (Inventory)")
-        inv_col1, inv_col2, inv_col3 = st.columns(3)
-        inv_col1.metric("Probabilidad Real de Cobro", f"{stats['prob_cash']:.1f}%")
-        inv_col2.metric("Stock Necesario (Cuentas)", f"{stats['inventory']} Unidades")
-        inv_col3.metric("Capital de Riesgo Total", f"${stats['investment']}", f"Buffer de {stats['inventory']} intentos", delta_color="inverse")
 
-        # 2. TIEMPO
-        st.subheader("2. Tiempo hasta Liquidez (Time to Cash)")
-        time_col1, time_col2 = st.columns(2)
-        
-        months_clean = f"{stats['months_time']:.1f} Meses"
-        days_clean = f"{int(stats['trading_days_total'])} Días Operativos"
-        
-        time_col1.metric("Tiempo Estimado (Cuenta Ganadora)", months_clean, days_clean)
-        
-        # NOTA ACLARATORIA SOBRE EL TIEMPO SECUENCIAL
-        st.caption(f"""
-        ℹ️ **Nota sobre el Tiempo:** Este cálculo representa el tiempo que tarda **la cuenta exitosa** en llegar al cobro. 
-        Si operas tus {stats['inventory']} intentos de forma **secuencial** (una después de quemar la otra), tu tiempo real podría extenderse hasta **{(stats['months_time'] * stats['inventory']):.1f} Meses**.
-        """)
+        # 2. BOTÓN DE EJECUCIÓN MASIVA
+        if st.button("🚀 Simular Portafolio Completo", type="primary", use_container_width=True):
+            
+            with st.spinner("Simulando operaciones en todas las cuentas simultáneamente..."):
+                
+                # VARIABLES GLOBALES DEL PORTAFOLIO
+                global_investment = 0
+                global_monthly_salary = 0
+                global_net_profit = 0
+                portfolio_results = []
+                
+                # EJECUTAR SIMULACIÓN POR CADA CUENTA
+                for item in st.session_state['portfolio']:
+                    stats = run_business_simulation(item['data'], risk, wr, rr, trades_day, comm, sl_min, sl_max)
+                    
+                    # Agregar al global
+                    global_investment += stats['investment']
+                    global_monthly_salary += stats['monthly_salary']
+                    global_net_profit += stats['net_profit']
+                    
+                    # Guardar individual
+                    portfolio_results.append({
+                        "name": item['name'],
+                        "stats": stats
+                    })
+                
+                # Guardar en DB
+                summary_txt = f"{len(portfolio_results)} Cuentas | Profit Total: ${global_net_profit:,.0f}"
+                save_plan_db(st.session_state['username'], summary_txt, global_investment, global_monthly_salary)
 
-        # 3. RENTABILIDAD
-        st.subheader("3. Viabilidad Financiera (Bottom Line)")
-        fin_col1, fin_col2, fin_col3 = st.columns(3)
-        fin_col1.metric("Primer Payout Estimado", f"${stats['first_payout']:,.0f}")
-        fin_col2.metric("Beneficio Neto (Post-Costos)", f"${stats['net_profit']:,.0f}")
-        fin_col3.metric("Salario Mensual Equivalente", f"${stats['monthly_salary']:,.0f} / mes")
-        
-        if stats['monthly_salary'] < 500:
-            st.error("❌ Negocio NO Viable: Tu esfuerzo paga menos que un salario mínimo.")
-        elif stats['monthly_salary'] > 2000:
-            st.balloons()
-            st.success("🚀 Negocio Altamente Rentable")
-        else:
-            st.info("⚠️ Negocio Marginal: Rentable pero ajustado.")
+            # --- VISUALIZACIÓN DE RESULTADOS ---
+            
+            # A. RESULTADOS GLOBALES (LA ESTRATEGIA COMPLETA)
+            st.markdown("### 🌍 Resultados Globales del Imperio")
+            
+            g_col1, g_col2, g_col3 = st.columns(3)
+            
+            g_col1.metric("Capital Riesgo Total", f"${global_investment:,.0f}", 
+                         help="Suma total del presupuesto necesario para asegurar todas las cuentas.")
+            
+            g_col2.metric("Sueldo Mensual Proyectado", f"${global_monthly_salary:,.0f} / mes", 
+                         help="Suma de todos los salarios equivalentes de tus cuentas.")
+            
+            roi_color = "normal" if global_net_profit > 0 else "inverse"
+            g_col3.metric("Beneficio Neto Total", f"${global_net_profit:,.0f}", 
+                         delta_color=roi_color, help="Payouts Totales - Costos Totales")
+            
+            if global_monthly_salary > 5000:
+                st.success("🏆 Estrategia de Alta Rentabilidad: Portafolio diversificado y potente.")
+            
+            st.divider()
+            
+            # B. DESGLOSE INDIVIDUAL (AISLADO)
+            st.subheader("🔍 Desglose por Cuenta (Unit Economics)")
+            
+            for res in portfolio_results:
+                s = res['stats']
+                with st.expander(f"📊 {res['name']} - (Prob: {s['prob_cash']:.1f}%)"):
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Stock Necesario", f"{s['inventory']} Cuentas")
+                    c2.metric("Inversión Individual", f"${s['investment']}")
+                    c3.metric("Tiempo Estimado", f"{s['months_time']:.1f} Meses")
+                    c4.metric("Aporte Salario", f"${s['monthly_salary']:,.0f} / mes")
+                    
+                    st.caption(f"Primer Payout Estimado: ${s['first_payout']:,.0f} | Beneficio Neto: ${s['net_profit']:,.0f}")
+                    
+                    # Alerta de tiempo
+                    if s['months_time'] > 6:
+                        st.warning("⚠️ Esta cuenta es lenta de capitalizar. Considera si vale la pena en el mix.")
 
     st.divider()
-    with st.expander("📜 Historial de Planes"):
+    with st.expander("📜 Historial de Portafolios"):
         planes = get_user_plans(st.session_state['username'])
-        if planes: st.dataframe(pd.DataFrame(planes, columns=["Empresa", "Prob Cobro %", "Inversión Total $", "Fecha"]), use_container_width=True)
+        if planes: st.dataframe(pd.DataFrame(planes, columns=["Resumen", "Inversión Total", "Sueldo Total", "Fecha"]), use_container_width=True)
