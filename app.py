@@ -11,13 +11,13 @@ import math
 # --- CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="Prop Firm Business Portfolio", page_icon="💼", layout="wide")
 
-# --- GESTIÓN DE ESTADO (SESIÓN + PORTAFOLIO) ---
+# --- GESTIÓN DE ESTADO ---
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'username' not in st.session_state:
     st.session_state['username'] = ''
 if 'portfolio' not in st.session_state:
-    st.session_state['portfolio'] = [] # Aquí guardaremos las cuentas seleccionadas
+    st.session_state['portfolio'] = [] 
 
 # --- BASE DE DATOS ---
 db_url = os.getenv("DATABASE_URL")
@@ -124,10 +124,18 @@ FIRMS_DATA = {
     }
 }
 
-# --- MOTOR DE SIMULACIÓN (NÚCLEO) ---
-def simulate_phase(balance, risk_money, win_rate, rr, profit_target_pct, max_total_dd_pct, comm_per_lot, pip_val, sl_min, sl_max, is_funded=False):
+# --- MOTOR DE SIMULACIÓN ---
+def simulate_phase(balance, risk_money, win_rate, rr, profit_target_pct, max_total_dd_pct, comm_per_lot, pip_val, sl_min, sl_max, is_funded=False, withdrawal_target=None):
     curr = balance
-    target_equity = balance + (balance * (profit_target_pct/100)) if not is_funded else balance + (balance * 0.02) 
+    
+    # DEFINICIÓN DE OBJETIVO (TARGET)
+    if is_funded:
+        # En fase fondeada, el target es el % de retiro que el usuario quiere alcanzar
+        target_equity = balance + (balance * (withdrawal_target/100))
+    else:
+        # En fases de evaluación, es el objetivo de la firma
+        target_equity = balance + (balance * (profit_target_pct/100))
+        
     limit_equity = balance - (balance * (max_total_dd_pct/100))
     trades = 0
     max_trades_allowed = 2000 
@@ -148,10 +156,8 @@ def simulate_phase(balance, risk_money, win_rate, rr, profit_target_pct, max_tot
     success = curr >= target_equity
     return success, trades, curr
 
-def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, comm, sl_min, sl_max):
-    # Esta función simula UNA cuenta específica
+def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, comm, sl_min, sl_max, withdrawal_pct):
     n_sims = 1000
-    pass_p2 = 0 
     pass_payout = 0 
     
     total_trades_accum = []
@@ -179,18 +185,18 @@ def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, c
             if not p2_ok: 
                 total_trades_accum.append(sim_trades)
                 continue
-            pass_p2 += 1
-        else:
-            pass_p2 += 1
         
-        # 3. FASE FONDEADA
-        funded_ok, t3, final_balance = simulate_phase(balance, risk_money, win_rate, rr, 0, firm_data['total_dd'], comm, pip_val, sl_min, sl_max, is_funded=True)
+        # 3. FASE FONDEADA (Target = Withdrawal %)
+        funded_ok, t3, final_balance = simulate_phase(balance, risk_money, win_rate, rr, 0, firm_data['total_dd'], comm, pip_val, sl_min, sl_max, is_funded=True, withdrawal_target=withdrawal_pct)
         sim_trades += t3
         total_trades_accum.append(sim_trades)
         
         if funded_ok:
             pass_payout += 1
+            # El profit es exactamente lo que el usuario definió como objetivo de retiro (o un poco más por el salto del último trade)
             profit = final_balance - balance
+            
+            # Profit Split estándar 80% (Para simplificar MVP, aunque algunas dan 90%)
             payout_val = (profit * 0.8) + firm_data['cost'] + firm_data.get('p1_bonus', 0)
             total_payout_amount += payout_val
 
@@ -220,7 +226,7 @@ def run_business_simulation(firm_data, risk_pct, win_rate, rr, trades_per_day, c
 # --- FRONTEND ---
 if not st.session_state['logged_in']:
     st.title("💼 Prop Firm Business Planner")
-    # ... (Login Code Identical)
+    # (Login Code)
     tab1, tab2 = st.tabs(["Entrar", "Crear Cuenta"])
     with tab1:
         u = st.text_input("Usuario", key="l_u")
@@ -245,135 +251,125 @@ else:
         st.session_state['logged_in'] = False; st.rerun()
     st.markdown("---")
 
-    # --- SIDEBAR: TU HABILIDAD (CONSTANTE) ---
-    st.sidebar.header("1. Tu Habilidad (Global)")
-    st.sidebar.caption("Estas métricas se aplicarán a todas las cuentas.")
+    # --- SIDEBAR: TU HABILIDAD (GLOBAL) ---
+    st.sidebar.header("1. Tu Estrategia (Global)")
     
     trades_day = st.sidebar.number_input("Trades por Día", min_value=1, max_value=50, value=3, step=1)
     wr = st.sidebar.slider("Win Rate (%)", 20, 80, 45)
     rr = st.sidebar.slider("Ratio R:R", 0.5, 5.0, 2.0, step=0.1, format="%.1f")
     risk = st.sidebar.slider("Riesgo por Trade (%)", 0.1, 3.0, 1.0, step=0.1, format="%.1f")
-    comm = st.sidebar.number_input("Comisión ($/Lote)", 0.0, 20.0, 7.0, step=0.1, format="%.1f")
     
-    c_sl1, c_sl2 = st.sidebar.columns(2)
-    sl_min = c_sl1.number_input("SL Mín", 1, 100, 5)
-    sl_max = c_sl2.number_input("SL Max", 1, 200, 15)
-
-    # --- BARRA LATERAL: CONSTRUCTOR DE PORTAFOLIO ---
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**💰 Objetivo de Cobro**")
+    withdrawal_pct = st.sidebar.slider("Quiero retirar al (%)", 1.0, 10.0, 3.0, step=0.5, 
+                                     help="¿A qué % de beneficio solicitas el retiro? (Ej: Retirar cada 3%)")
+    
     st.sidebar.divider()
-    st.sidebar.header("2. Armar Portafolio")
+    st.sidebar.header("2. Agregar Cuentas")
     
     sel_company = st.sidebar.selectbox("Empresa", list(FIRMS_DATA.keys()))
     sel_program = st.sidebar.selectbox("Programa", list(FIRMS_DATA[sel_company].keys()))
     sel_size = st.sidebar.selectbox("Capital", list(FIRMS_DATA[sel_company][sel_program].keys()))
     
-    # Botón para añadir
-    if st.sidebar.button("➕ Agregar Cuenta al Portafolio"):
+    # Botón Agregar
+    if st.sidebar.button("➕ Agregar al Carrito"):
         firm_details = FIRMS_DATA[sel_company][sel_program][sel_size]
+        item_id = int(time.time() * 1000) # ID único simple
         item = {
             "name": f"{sel_company} {sel_program} ({sel_size})",
             "data": firm_details,
-            "id": len(st.session_state['portfolio'])
+            "id": item_id
         }
         st.session_state['portfolio'].append(item)
-        st.success("Agregado")
-    
-    # Botón para limpiar
-    if st.sidebar.button("🗑️ Limpiar Portafolio"):
-        st.session_state['portfolio'] = []
-        st.rerun()
+        st.success("Cuenta agregada.")
 
     # --- ÁREA PRINCIPAL ---
     
-    # 1. MOSTRAR PORTAFOLIO ACTUAL
+    # 1. MOSTRAR PORTAFOLIO EDITABLE
     if len(st.session_state['portfolio']) == 0:
-        st.info("👈 Comienza agregando cuentas en la barra lateral para simular tu estrategia de inversión.")
+        st.info("👈 Tu portafolio está vacío. Agrega cuentas desde la barra lateral.")
     else:
-        st.subheader("📦 Tu Portafolio de Inversión")
+        st.subheader(f"📦 Tu Portafolio ({len(st.session_state['portfolio'])} cuentas)")
         
-        # Mostrar cuentas como tarjetas pequeñas o lista
-        p_cols = st.columns(3)
+        # Iteramos para mostrar y permitir borrar
         for idx, item in enumerate(st.session_state['portfolio']):
-            with p_cols[idx % 3]:
-                st.markdown(f"""
-                **{item['name']}**
-                * Costo: ${item['data']['cost']}
-                * DD: {item['data']['total_dd']}%
-                """, unsafe_allow_html=True)
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
+                c1.markdown(f"**{item['name']}**")
+                c2.caption(f"Costo: ${item['data']['cost']}")
+                c3.caption(f"DD: {item['data']['total_dd']}%")
+                
+                # Botón de borrar con clave única
+                if c4.button("🗑️", key=f"del_{item['id']}"):
+                    st.session_state['portfolio'].pop(idx)
+                    st.rerun()
         
         st.divider()
 
-        # 2. BOTÓN DE EJECUCIÓN MASIVA
-        if st.button("🚀 Simular Portafolio Completo", type="primary", use_container_width=True):
+        # 2. BOTÓN DE SIMULACIÓN
+        if st.button("🚀 Simular Viabilidad del Portafolio", type="primary", use_container_width=True):
             
-            with st.spinner("Simulando operaciones en todas las cuentas simultáneamente..."):
+            with st.spinner("Ejecutando simulaciones masivas con tu objetivo de retiro..."):
                 
-                # VARIABLES GLOBALES DEL PORTAFOLIO
+                # VARS GLOBALES
                 global_investment = 0
                 global_monthly_salary = 0
                 global_net_profit = 0
                 portfolio_results = []
                 
-                # EJECUTAR SIMULACIÓN POR CADA CUENTA
+                # INPUTS DE COSTOS VARIOS
+                comm = 7.0 
+                sl_min = 5
+                sl_max = 15
+                
                 for item in st.session_state['portfolio']:
-                    stats = run_business_simulation(item['data'], risk, wr, rr, trades_day, comm, sl_min, sl_max)
+                    stats = run_business_simulation(item['data'], risk, wr, rr, trades_day, comm, sl_min, sl_max, withdrawal_pct)
                     
-                    # Agregar al global
                     global_investment += stats['investment']
                     global_monthly_salary += stats['monthly_salary']
                     global_net_profit += stats['net_profit']
                     
-                    # Guardar individual
                     portfolio_results.append({
                         "name": item['name'],
                         "stats": stats
                     })
                 
-                # Guardar en DB
-                summary_txt = f"{len(portfolio_results)} Cuentas | Profit Total: ${global_net_profit:,.0f}"
+                # Guardar
+                summary_txt = f"{len(portfolio_results)} Cuentas | Retiro Obj: {withdrawal_pct}%"
                 save_plan_db(st.session_state['username'], summary_txt, global_investment, global_monthly_salary)
 
-            # --- VISUALIZACIÓN DE RESULTADOS ---
-            
-            # A. RESULTADOS GLOBALES (LA ESTRATEGIA COMPLETA)
-            st.markdown("### 🌍 Resultados Globales del Imperio")
+            # A. RESULTADOS GLOBALES
+            st.markdown("### 🌍 Resultados del Imperio (Consolidado)")
             
             g_col1, g_col2, g_col3 = st.columns(3)
             
             g_col1.metric("Capital Riesgo Total", f"${global_investment:,.0f}", 
-                         help="Suma total del presupuesto necesario para asegurar todas las cuentas.")
+                         help="Suma total del presupuesto de seguridad para todas las cuentas.")
             
             g_col2.metric("Sueldo Mensual Proyectado", f"${global_monthly_salary:,.0f} / mes", 
-                         help="Suma de todos los salarios equivalentes de tus cuentas.")
+                         help="Beneficio neto mensualizado sumando todas las fuentes.")
             
             roi_color = "normal" if global_net_profit > 0 else "inverse"
             g_col3.metric("Beneficio Neto Total", f"${global_net_profit:,.0f}", 
-                         delta_color=roi_color, help="Payouts Totales - Costos Totales")
+                         delta_color=roi_color)
             
-            if global_monthly_salary > 5000:
-                st.success("🏆 Estrategia de Alta Rentabilidad: Portafolio diversificado y potente.")
-            
-            st.divider()
-            
-            # B. DESGLOSE INDIVIDUAL (AISLADO)
-            st.subheader("🔍 Desglose por Cuenta (Unit Economics)")
+            st.caption(f"Simulación basada en retirar siempre el **{withdrawal_pct}%** del capital.")
+
+            # B. DETALLE POR CUENTA
+            st.subheader("🔍 Detalle Individual")
             
             for res in portfolio_results:
                 s = res['stats']
-                with st.expander(f"📊 {res['name']} - (Prob: {s['prob_cash']:.1f}%)"):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Stock Necesario", f"{s['inventory']} Cuentas")
-                    c2.metric("Inversión Individual", f"${s['investment']}")
-                    c3.metric("Tiempo Estimado", f"{s['months_time']:.1f} Meses")
-                    c4.metric("Aporte Salario", f"${s['monthly_salary']:,.0f} / mes")
-                    
-                    st.caption(f"Primer Payout Estimado: ${s['first_payout']:,.0f} | Beneficio Neto: ${s['net_profit']:,.0f}")
-                    
-                    # Alerta de tiempo
-                    if s['months_time'] > 6:
-                        st.warning("⚠️ Esta cuenta es lenta de capitalizar. Considera si vale la pena en el mix.")
+                # Título dinámico
+                status_icon = "🟢" if s['monthly_salary'] > 0 else "🔴"
+                
+                with st.expander(f"{status_icon} {res['name']} - Prob. Cobro: {s['prob_cash']:.1f}%"):
+                    d1, d2, d3 = st.columns(3)
+                    d1.metric("Stock Necesario", f"{s['inventory']} Intentos", f"Inv: ${s['investment']}")
+                    d2.metric("Payout Estimado", f"${s['first_payout']:,.0f}", f"Objetivo: {withdrawal_pct}%")
+                    d3.metric("Aporte al Sueldo", f"${s['monthly_salary']:,.0f}", f"Tiempo: {s['months_time']:.1f} Meses")
 
     st.divider()
-    with st.expander("📜 Historial de Portafolios"):
+    with st.expander("📜 Historial"):
         planes = get_user_plans(st.session_state['username'])
         if planes: st.dataframe(pd.DataFrame(planes, columns=["Resumen", "Inversión Total", "Sueldo Total", "Fecha"]), use_container_width=True)
