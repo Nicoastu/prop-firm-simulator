@@ -195,19 +195,21 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
         else:
             pass_p2_count += 1
             
-        # 3. FONDEO
+        # COBRO 1
         ok_c1, tc1, _, cause3 = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
         if ok_c1:
             pass_c1 += 1
             trades_c1.append(tc1)
             sum_pay1 += pay_val_1 
             
+            # COBRO 2
             ok_c2, tc2, _, _ = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
             if ok_c2:
                 pass_c2 += 1
                 trades_c2.append(tc2)
                 sum_pay2 += pay_val_2
                 
+                # COBRO 3
                 ok_c3, tc3, _, _ = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
                 if ok_c3:
                     pass_c3 += 1
@@ -232,9 +234,16 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
     time_c2 = calculate_time_metrics(trades_c2, trades_day)
     time_c3 = calculate_time_metrics(trades_c3, trades_day)
     
-    if prob_c1 >= 98.0: attempts = 1.0; reason="Probabilidad > 98%. 1 cuenta basta."
-    elif prob_c1 <= 0.5: attempts = 100.0; reason="Probabilidad nula."
-    else: attempts = 100/prob_c1; reason=f"Con {prob_c1:.1f}% prob, necesitas {math.ceil(attempts)} intentos."
+    # --- LOGICA DE STOCK AJUSTADA (Umbral 85%) ---
+    if prob_c1 >= 85.0: 
+        attempts = 1.0
+        reason = f"¡Probabilidad Alta ({prob_c1:.1f}%)! Con este nivel de seguridad, 1 sola cuenta es suficiente."
+    elif prob_c1 <= 0.5: 
+        attempts = 100.0
+        reason = "Probabilidad nula. Estrategia no viable."
+    else: 
+        attempts = 100/prob_c1
+        reason = f"Con {prob_c1:.1f}% de éxito, la estadística sugiere cubrir {math.ceil(attempts)} intentos secuenciales para garantizar el cobro."
     
     inv_req = math.ceil(attempts) * account_data['cost']
     salary = avg_pay1 - inv_req
@@ -258,7 +267,7 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
         "is_2step": is_2step
     }
 
-# --- FUNCIÓN VISUALIZADORA (MEJORADA CON EXPLICACIONES) ---
+# --- VISUALIZADORA ---
 def display_rich_results(results_list, title_prefix=""):
     g_inv = 0; g_pay1 = 0; g_pay2 = 0; g_pay3 = 0
     for res in results_list:
@@ -267,39 +276,19 @@ def display_rich_results(results_list, title_prefix=""):
         g_pay2 += res['stats']['avg_pay2']
         g_pay3 += res['stats']['avg_pay3']
     
-    # KPIs Globales
     st.markdown(f"### 📊 {title_prefix} - Resultados Consolidados")
     m1, m2, m3 = st.columns(3)
-    
-    # METRICA 1: INVERSION TOTAL -> PRESUPUESTO DE SEGURIDAD
-    m1.metric(
-        "Presupuesto Sugerido (Seguridad)", 
-        f"${g_inv:,.0f}",
-        help="Este monto no es lo que cuesta 1 cuenta. Es el capital total sugerido para comprar los 'intentos' necesarios (cuentas extra) según tu probabilidad de fallo. Si tu prob. es baja, el sistema sugiere comprar más intentos para asegurar el éxito."
-    )
-    
-    # METRICA 2: RETORNO CICLO 1 -> GANANCIA TOTAL PROYECTADA
+    m1.metric("Presupuesto Sugerido (Seguridad)", f"${g_inv:,.0f}", help="Capital reservado sugerido basado en tu probabilidad de éxito.")
     total_potential = g_pay1 + g_pay2 + g_pay3
-    m2.metric(
-        "Ganancia Total Proyectada (3 Meses)", 
-        f"${total_potential:,.0f}",
-        help="Es la suma estimada de lo que retirarías en el Mes 1, Mes 2 y Mes 3 combinados, si logras mantener la constancia."
-    )
-    
-    # METRICA 3: ROI
     roi = ((total_potential - g_inv)/g_inv)*100 if g_inv > 0 else 0
-    m3.metric(
-        "ROI Estimado", 
-        f"{roi:.1f}%",
-        help="Retorno sobre la Inversión. Por cada $1 que arriesgas en pruebas, ¿cuántos $ esperas ganar limpios tras 3 meses?"
-    )
+    m2.metric("Ganancia Proyectada (3 Meses)", f"${total_potential:,.0f}")
+    m3.metric("ROI Potencial", f"{roi:.1f}%")
     
-    # Flujo de Caja
-    st.markdown("### 💰 Proyección de Flujo de Caja (Paso a Paso)")
+    st.markdown("### 💰 Proyección de Flujo de Caja")
     fc1, fc2, fc3 = st.columns(3)
-    fc1.metric("Retiro 1 (Recuperación)", f"${g_pay1:,.0f}", help="Incluye Profit Split + Reembolso del Fee + Bonos.")
-    fc2.metric("Retiro 2 (Beneficio Puro)", f"${g_pay2:,.0f}", help="Profit Split del segundo mes.")
-    fc3.metric("Retiro 3 (Consistencia)", f"${g_pay3:,.0f}", help="Profit Split del tercer mes.")
+    fc1.metric("Retiro 1 (Recuperación)", f"${g_pay1:,.0f}")
+    fc2.metric("Retiro 2 (Beneficio)", f"${g_pay2:,.0f}")
+    fc3.metric("Retiro 3 (Consistencia)", f"${g_pay3:,.0f}")
     
     st.divider()
     st.subheader("🔍 Desglose Detallado por Cuenta")
@@ -308,7 +297,6 @@ def display_rich_results(results_list, title_prefix=""):
         s = res['stats']
         bk = s['first_pay_est']
         
-        # Lógica Delta
         deltas = {'p1': None, 'p2': None, 'c1': None, 'c2': None, 'c3': None, 'money': None}
         if 'baseline' in res:
             b = res['baseline']
@@ -324,52 +312,33 @@ def display_rich_results(results_list, title_prefix=""):
             if abs(diff_money) > 10: deltas['money'] = f"{diff_money:+.0f}"
 
         header_text = f"📈 {res['name']}"
-        if 'start_bal' in res:
-             header_text += f" (Desde: ${res['start_bal']:,.0f})"
+        if 'start_bal' in res: header_text += f" (Desde: ${res['start_bal']:,.0f})"
         
         with st.expander(f"{header_text} | Prob. Cobro: {s['prob_c1']:.1f}%"):
             cols = st.columns(6)
-            
-            # FASE 1
-            cols[0].metric("1. Fase 1", f"{s['prob_p1']:.1f}%", delta=deltas['p1'], help="Probabilidad de pasar la Fase 1.")
-            cols[0].caption(f"⏱ {s['time_p1']:.1f} m")
-            
-            # FASE 2
+            cols[0].metric("1. Fase 1", f"{s['prob_p1']:.1f}%", delta=deltas['p1']); cols[0].caption(f"⏱ {s['time_p1']:.1f} m")
             p2_val = f"{s['prob_p2']:.1f}%" if s['is_2step'] else "N/A"
-            cols[1].metric("2. Fase 2", p2_val, delta=deltas['p2'], help="Probabilidad de pasar la Fase 2.")
-            cols[1].caption(f"⏱ {s['time_p2']:.1f} m" if s['is_2step'] else "-")
-            
-            # STOCK
-            cols[2].metric("3. Intentos", f"{s['inventory']} u.", f"Inv: ${s['investment']:,.0f}", delta_color="off", help="Número de cuentas recomendadas a comprar para asegurar el éxito estadístico.")
-            
-            # RETIROS
-            cols[3].metric("4. Retiro 1", f"{s['prob_c1']:.1f}%", delta=deltas['c1'], help="Probabilidad de llegar al primer cobro.")
-            cols[3].caption(f"${s['avg_pay1']:,.0f} | {s['time_c1']:.1f} m")
-            
-            cols[4].metric("5. Retiro 2", f"{s['prob_c2']:.1f}%", delta=deltas['c2'])
-            cols[4].caption(f"${s['avg_pay2']:,.0f} | {s['time_c2']:.1f} m")
-            
-            cols[5].metric("6. Retiro 3", f"{s['prob_c3']:.1f}%", delta=deltas['c3'])
-            cols[5].caption(f"${s['avg_pay3']:,.0f} | {s['time_c3']:.1f} m")
+            cols[1].metric("2. Fase 2", p2_val, delta=deltas['p2']); cols[1].caption(f"⏱ {s['time_p2']:.1f} m" if s['is_2step'] else "-")
+            cols[2].metric("3. Intentos", f"{s['inventory']} u.", f"Inv: ${s['investment']:,.0f}", delta_color="off")
+            cols[3].metric("4. Retiro 1", f"{s['prob_c1']:.1f}%", delta=deltas['c1']); cols[3].caption(f"${s['avg_pay1']:,.0f} | {s['time_c1']:.1f} m")
+            cols[4].metric("5. Retiro 2", f"{s['prob_c2']:.1f}%", delta=deltas['c2']); cols[4].caption(f"${s['avg_pay2']:,.0f} | {s['time_c2']:.1f} m")
+            cols[5].metric("6. Retiro 3", f"{s['prob_c3']:.1f}%", delta=deltas['c3']); cols[5].caption(f"${s['avg_pay3']:,.0f} | {s['time_c3']:.1f} m")
             
             st.markdown("---")
             if s['total_failures'] > 0:
-                st.caption("💀 **Análisis de Riesgos (Causas de fallo):**")
+                st.caption("💀 **Causas de Fallo:**")
                 f_cols = st.columns(3)
                 for k, v in s['fail_stats'].items():
                     if v > 0:
                         with f_cols[list(s['fail_stats'].keys()).index(k) % 3]:
-                            st.progress(int(v))
-                            st.caption(f"{k}: {v:.1f}%")
+                            st.progress(int(v)); st.caption(f"{k}: {v:.1f}%")
             
             st.markdown("---")
             st.info(f"**Estrategia:** {s['stock_reason']}")
             st.caption("💰 **Desglose 1er Pago:**")
-            col_pay1, col_pay2, col_pay3, col_pay4 = st.columns(4)
-            col_pay1.metric("Split", f"${bk['split']:,.0f}")
-            col_pay2.metric("Refund", f"+${bk['refund']}")
-            col_pay3.metric("Bonus", f"+${bk['bonus']}")
-            col_pay4.metric("TOTAL", f"${bk['total']:,.0f}", delta=deltas['money'])
+            cp = st.columns(4)
+            cp[0].metric("Split", f"${bk['split']:,.0f}"); cp[1].metric("Refund", f"+${bk['refund']}")
+            cp[2].metric("Bonus", f"+${bk['bonus']}"); cp[3].metric("TOTAL", f"${bk['total']:,.0f}", delta=deltas['money'])
 
 # --- UI ---
 if not st.session_state['logged_in']:
@@ -410,6 +379,15 @@ else:
                 saved = load_portfolio_db(st.session_state['username'])
                 if saved:
                     st.session_state['portfolio'] = saved
+                    # FIX: Actualizar estado de widgets
+                    for item in saved:
+                        k = str(item['id'])
+                        if f"w{k}" in st.session_state: st.session_state[f"w{k}"] = item['params']['win_rate']
+                        if f"r{k}" in st.session_state: st.session_state[f"r{k}"] = item['params']['rr']
+                        if f"rk{k}" in st.session_state: st.session_state[f"rk{k}"] = item['params']['risk']
+                        if f"wt{k}" in st.session_state: st.session_state[f"wt{k}"] = item['params']['withdrawal_target']
+                        if f"td{k}" in st.session_state: st.session_state[f"td{k}"] = item['params']['trades_day']
+                        if f"cm{k}" in st.session_state: st.session_state[f"cm{k}"] = item['params']['comm']
                     st.rerun()
                 else: st.warning("No hay datos guardados.")
         
@@ -435,7 +413,6 @@ else:
     else:
         tab_teorica, tab_journal, tab_real = st.tabs(["Proyección Teórica Portafolio", "Diario / Ejecución", "Proyección Real Portafolio"])
         
-        # 1. TEÓRICA
         with tab_teorica:
             st.subheader("Parametrización y Escenarios Ideales")
             for i, item in enumerate(st.session_state['portfolio']):
@@ -466,7 +443,6 @@ else:
             if st.session_state['sim_results_theoretical']:
                 display_rich_results(st.session_state['sim_results_theoretical'], title_prefix="TEÓRICO")
 
-        # 2. DIARIO
         with tab_journal:
             st.subheader("📓 Registro de Operaciones Reales")
             for item in st.session_state['portfolio']:
@@ -494,7 +470,6 @@ else:
                         st.dataframe(df_j.tail(5), use_container_width=True)
                     else: st.info("Sin trades registrados.")
 
-        # 3. PROYECCIÓN REAL
         with tab_real:
             total_trades_count = sum(len(item.get('journal', [])) for item in st.session_state['portfolio'])
             
