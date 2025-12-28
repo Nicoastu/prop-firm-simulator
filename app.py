@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, text
 import os
 import time
 import math
+import json  # Importante para serializar los datos
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Prop Firm Portfolio Pro", page_icon="📈", layout="wide")
@@ -16,7 +17,7 @@ if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'username' not in st.session_state: st.session_state['username'] = ''
 if 'portfolio' not in st.session_state: st.session_state['portfolio'] = [] 
 
-# --- BASE DE DATOS (Solo Usuarios) ---
+# --- BASE DE DATOS ---
 db_url = os.getenv("DATABASE_URL")
 engine = None
 if db_url:
@@ -29,8 +30,39 @@ if db_url:
 def init_db():
     if engine:
         with engine.connect() as conn:
+            # Tabla de Usuarios
             conn.execute(text("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, auth_type TEXT DEFAULT 'manual');"))
+            # Tabla de Persistencia del Portafolio (JSON)
+            conn.execute(text("CREATE TABLE IF NOT EXISTS user_portfolios (username TEXT PRIMARY KEY, portfolio_json TEXT);"))
             conn.commit()
+
+# --- FUNCIONES DE PERSISTENCIA (GUARDAR/CARGAR) ---
+def save_portfolio_db(username, portfolio_data):
+    """Guarda la lista de diccionarios del portafolio como un JSON string"""
+    if not engine: return False
+    try:
+        json_data = json.dumps(portfolio_data)
+        with engine.connect() as conn:
+            # Usamos DELETE + INSERT para asegurar "reemplazo" limpio (Upsert simple)
+            conn.execute(text("DELETE FROM user_portfolios WHERE username = :u"), {"u": username})
+            conn.execute(text("INSERT INTO user_portfolios (username, portfolio_json) VALUES (:u, :d)"), {"u": username, "d": json_data})
+            conn.commit()
+        return True
+    except Exception as e:
+        print(e)
+        return False
+
+def load_portfolio_db(username):
+    """Recupera y deserializa el portafolio del usuario"""
+    if not engine: return []
+    try:
+        with engine.connect() as conn:
+            res = conn.execute(text("SELECT portfolio_json FROM user_portfolios WHERE username = :u"), {"u": username}).fetchone()
+            if res:
+                return json.loads(res[0])
+            return []
+    except:
+        return []
 
 # --- AUTENTICACIÓN ---
 def register_user(u, p):
@@ -53,7 +85,7 @@ def login_user(u, p):
 
 if engine: init_db()
 
-# --- DATOS DE EMPRESAS (Solo High Stakes) ---
+# --- DATOS DE EMPRESAS ---
 FIRMS_DATA = {
     "The5ers": {
         "High Stakes (2 Step)": {
@@ -62,18 +94,6 @@ FIRMS_DATA = {
             "20K":  {"cost": 165, "size": 20000,  "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 15},
             "60K":  {"cost": 329, "size": 60000,  "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 25},
             "100K": {"cost": 545, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 40}
-        }
-    },
-    # Mantenemos otras firmas para comparación si el usuario lo desea, 
-    # pero Hyper Growth ha sido eliminado.
-    "FTMO": {
-        "Swing Challenge": {
-            "100K": {"cost": 540, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 10.0, "profit_p2": 5.0, "p1_bonus": 0}
-        }
-    },
-    "FundedNext": {
-        "Stellar 1-Step": {
-            "100K": {"cost": 519, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 0.0, "p1_bonus": 0}
         }
     }
 }
@@ -91,19 +111,16 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
     day_start_equity = curr
     trades_today = 0
     
-    # Límite de pérdida diaria es un MONTO FIJO basado en el Balance Inicial
     fixed_daily_loss_amount = initial_balance * (daily_dd_pct / 100)
     
     while curr > static_limit and curr < target_equity and trades < max_trades:
         trades += 1
         trades_today += 1
         
-        # Reset Diario
         if trades_today > trades_per_day:
             day_start_equity = curr 
             trades_today = 1        
             
-        # Operativa
         current_sl = random.uniform(sl_min, sl_max)
         risk_money = initial_balance * (risk_pct / 100) 
         
@@ -121,7 +138,6 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
             if is_error: loss_amount *= 1.5 
             curr -= loss_amount
             
-        # --- DIAGNÓSTICO DE MUERTE ---
         # A. Max DD Estático
         if curr <= static_limit:
             return False, trades, curr, "Max Drawdown (Total)"
@@ -131,11 +147,9 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
         if current_daily_drawdown >= fixed_daily_loss_amount:
             return False, trades, curr, "Daily Drawdown"
             
-    # Si sale del bucle por Target
     if curr >= target_equity:
         return True, trades, curr, "Success"
     else:
-        # Si sale del bucle por Timeout
         return False, trades, curr, "Timeout (Lento)"
 
 def calculate_time_metrics(trades_list, trades_per_day):
@@ -169,7 +183,6 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     
     is_2step = firm.get('profit_p2', 0) > 0
     
-    # Payouts Teóricos (Estrictos al Target)
     target_amount = firm['size'] * (w_target / 100)
     split_share = target_amount * 0.80
     pay_val_1 = split_share + firm['cost'] + firm.get('p1_bonus', 0)
@@ -226,7 +239,6 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     prob_c2 = (pass_c2/n_sims)*100
     prob_c3 = (pass_c3/n_sims)*100
     
-    # TIEMPOS
     time_p1 = calculate_time_metrics(trades_p1, trades_day)
     time_p2 = calculate_time_metrics(trades_p2, trades_day) if is_2step else 0
     time_c1 = calculate_time_metrics(trades_c1, trades_day)
@@ -234,7 +246,6 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     time_c3 = calculate_time_metrics(trades_c3, trades_day)
     total_time_to_cash = time_p1 + time_p2 + time_c1
     
-    # LÓGICA DE STOCK
     if prob_c1 >= 98.0: 
         attempts = 1.0
         stock_reason = "Probabilidad > 98%. Estadísticamente 1 cuenta es suficiente."
@@ -261,7 +272,6 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
         "total": pay_val_1
     }
     
-    # Diagnóstico Fallos
     total_failures = n_sims - pass_c1
     failure_stats = {}
     if total_failures > 0:
@@ -290,7 +300,15 @@ if not st.session_state['logged_in']:
             with st.form("login"):
                 u = st.text_input("Usuario"); p = st.text_input("Clave", type="password")
                 if st.form_submit_button("Ingresar", type="primary", use_container_width=True):
-                    if login_user(u, p): st.session_state['logged_in']=True; st.session_state['username']=u; st.rerun()
+                    if login_user(u, p): 
+                        st.session_state['logged_in']=True
+                        st.session_state['username']=u
+                        # AUTO-CARGAR PORTAFOLIO AL LOGUEAR
+                        saved_portfolio = load_portfolio_db(u)
+                        if saved_portfolio:
+                            st.session_state['portfolio'] = saved_portfolio
+                            st.toast("📂 Portafolio recuperado exitosamente.")
+                        st.rerun()
                     else: st.error("Error credenciales")
         with tab_reg:
             with st.form("register"):
@@ -310,6 +328,17 @@ else:
     with st.sidebar:
         st.header("1. Configuración Global")
         sim_precision = st.select_slider("Precisión", options=[500, 1000, 5000], value=1000, format_func=lambda x: f"{x} Escenarios")
+        
+        # BOTÓN DE GUARDADO
+        if st.button("💾 Guardar Progreso", type="secondary", use_container_width=True):
+            if st.session_state['portfolio']:
+                if save_portfolio_db(st.session_state['username'], st.session_state['portfolio']):
+                    st.success("Configuración guardada en la nube.")
+                else:
+                    st.error("Error al guardar.")
+            else:
+                st.warning("El portafolio está vacío.")
+
         st.divider()
         st.header("2. Agregar Activos")
         s_firm = st.selectbox("Empresa", list(FIRMS_DATA.keys()))
@@ -393,9 +422,9 @@ else:
                         # Fila 1: Probabilidad y Tiempo
                         c1, c2, c3, c4, c5 = st.columns(5)
                         
-                        c1.metric("1. Fase 1", f"{s['prob_p1']:.1f}%", f"⏱ {s['time_p1']:.1f} Meses", delta_color="off")
+                        c1.metric("1. Fase 1", f"{s['prob_p1']:.1f}%", f"⏱ {s['time_p1']:.1f} m", delta_color="off")
                         p2_label = f"{s['prob_p2']:.1f}%" if s['is_2step'] else "N/A"
-                        p2_time = f"⏱ {s['time_p2']:.1f} Meses" if s['is_2step'] else "-"
+                        p2_time = f"⏱ {s['time_p2']:.1f} m" if s['is_2step'] else "-"
                         c2.metric("2. Fase 2", p2_label, p2_time, delta_color="off")
                         c3.metric("3. Retiro 1", f"{s['prob_c1']:.1f}%", f"${s['avg_pay1']:,.0f} | ⏱ {s['time_c1']:.1f} m")
                         c4.metric("4. Retiro 2", f"{s['prob_c2']:.1f}%", f"${s['avg_pay2']:,.0f} | ⏱ {s['time_c2']:.1f} m")
