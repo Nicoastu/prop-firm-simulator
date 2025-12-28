@@ -92,7 +92,7 @@ FIRMS_DATA = {
     }
 }
 
-# --- MOTOR DE SIMULACIÓN (COMPLETO) ---
+# --- MOTOR DE SIMULACIÓN ---
 def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, target_pct, max_dd_pct, daily_dd_pct, comm, sl_min, sl_max, trades_per_day, is_funded=False):
     curr = current_balance
     target_equity = initial_balance + (initial_balance * (target_pct/100))
@@ -258,7 +258,6 @@ def display_rich_results(results_list, title_prefix=""):
         g_pay2 += res['stats']['avg_pay2']
         g_pay3 += res['stats']['avg_pay3']
     
-    # KPIs Globales
     st.markdown(f"### 📊 {title_prefix} - Resultados Consolidados")
     m1, m2, m3 = st.columns(3)
     m1.metric("Inversión Total (Riesgo)", f"${g_inv:,.0f}")
@@ -267,7 +266,6 @@ def display_rich_results(results_list, title_prefix=""):
     m2.metric("Retorno Potencial (Ciclo 1)", f"${total_potential:,.0f}")
     m3.metric("ROI Potencial", f"{roi:.1f}%")
     
-    # Flujo
     st.markdown("### 💰 Proyección de Flujo de Caja")
     fc1, fc2, fc3 = st.columns(3)
     fc1.metric("Retiro 1 (Recuperación)", f"${g_pay1:,.0f}")
@@ -281,19 +279,15 @@ def display_rich_results(results_list, title_prefix=""):
         s = res['stats']
         bk = s['first_pay_est']
         
-        # Identificar si es teórica o real
         header_text = f"📈 {res['name']}"
         if 'start_bal' in res:
              header_text += f" (Desde: ${res['start_bal']:,.0f})"
         
         with st.expander(f"{header_text} | Prob. Cobro: {s['prob_c1']:.1f}%"):
             c1, c2, c3, c4, c5 = st.columns(5)
-            # Fase 1 y 2
             total_time_eval = s['time_p1'] + s['time_p2']
             c1.metric("1. Fases Eval", "En Proceso", f"⏱ {total_time_eval:.1f} m", delta_color="off")
             c2.metric("2. Stock Req.", f"{s['inventory']} u.", f"Inv: ${s['investment']:,.0f}", delta_color="off")
-            
-            # Retiros
             c3.metric("1er Retiro", f"{s['prob_c1']:.1f}%", f"${s['avg_pay1']:,.0f} | ⏱ {s['time_c1']:.1f} m")
             c4.metric("2do Retiro", f"{s['prob_c2']:.1f}%", f"${s['avg_pay2']:,.0f} | ⏱ {s['time_c2']:.1f} m")
             c5.metric("3er Retiro", f"{s['prob_c3']:.1f}%", f"${s['avg_pay3']:,.0f} | ⏱ {s['time_c3']:.1f} m")
@@ -374,10 +368,11 @@ else:
     if not st.session_state['portfolio']:
         st.info("Portafolio vacío. Agrega una cuenta.")
     else:
-        tab_config, tab_journal, tab_sim = st.tabs(["⚙️ Configuración", "📝 Diario / Ejecución", "🚀 Simulación & Proyección"])
+        # PESTAÑAS RENOMBRADAS
+        tab_teorica, tab_journal, tab_real = st.tabs(["Proyección Teórica Portafolio", "Diario / Ejecución", "Proyección Real Portafolio"])
         
-        # 1. CONFIGURACIÓN
-        with tab_config:
+        # 1. PROYECCIÓN TEÓRICA (CONFIGURACIÓN)
+        with tab_teorica:
             st.subheader("Parametrización del Portafolio")
             for i, item in enumerate(st.session_state['portfolio']):
                 if 'journal' not in item: item['journal'] = []
@@ -405,7 +400,6 @@ else:
                         results.append({"name": item['full_name'], "stats": s, "start_bal": start_bal})
                     st.session_state['sim_results_theoretical'] = results
             
-            # Mostrar resultados teóricos si existen
             if st.session_state['sim_results_theoretical']:
                 display_rich_results(st.session_state['sim_results_theoretical'], title_prefix="TEÓRICO")
 
@@ -437,21 +431,26 @@ else:
                         st.dataframe(df_j.tail(5), use_container_width=True)
                     else: st.info("Sin trades.")
 
-        # 3. SIMULACIÓN (REAL)
-        with tab_sim:
-            st.info("Esta sección proyecta tu futuro basándose en tu Balance Actual (Diario).")
-            if st.button("🚀 Proyectar desde Balance Actual (REAL)", type="primary", use_container_width=True):
-                with st.spinner("Ejecutando Montecarlo Avanzado..."):
-                    results = []
-                    for item in st.session_state['portfolio']:
-                        if 'journal' not in item: item['journal'] = []
-                        # Balance Real
-                        start_bal = item['data']['size'] + sum(t['net'] for t in item['journal'])
-                        
-                        s = run_account_simulation(item['data'], item['params'], sim_precision, start_bal)
-                        results.append({"name": item['full_name'], "stats": s, "start_bal": start_bal})
-                    
-                    st.session_state['sim_results_real'] = results
+        # 3. PROYECCIÓN REAL
+        with tab_real:
+            # Validación: ¿Existen trades?
+            total_trades_count = sum(len(item.get('journal', [])) for item in st.session_state['portfolio'])
             
-            if st.session_state['sim_results_real']:
-                display_rich_results(st.session_state['sim_results_real'], title_prefix="REAL")
+            if total_trades_count == 0:
+                st.info("⚠️ Para generar una Proyección Real, primero debes registrar al menos una operación en la pestaña 'Diario / Ejecución'.")
+                st.caption("Esta sección proyecta tu futuro basándose en tu Balance Actual (Diario). Sin datos reales, usa la pestaña 'Proyección Teórica'.")
+            else:
+                if st.button("🚀 Proyectar desde Balance Actual (REAL)", type="primary", use_container_width=True):
+                    with st.spinner("Ejecutando Montecarlo desde tu realidad..."):
+                        results = []
+                        for item in st.session_state['portfolio']:
+                            if 'journal' not in item: item['journal'] = []
+                            # Balance Real
+                            start_bal = item['data']['size'] + sum(t['net'] for t in item['journal'])
+                            s = run_account_simulation(item['data'], item['params'], sim_precision, start_bal)
+                            results.append({"name": item['full_name'], "stats": s, "start_bal": start_bal})
+                        
+                        st.session_state['sim_results_real'] = results
+                
+                if st.session_state['sim_results_real']:
+                    display_rich_results(st.session_state['sim_results_real'], title_prefix="REAL")
