@@ -53,7 +53,7 @@ def login_user(u, p):
 
 if engine: init_db()
 
-# --- DATOS DE EMPRESAS ---
+# --- DATOS DE EMPRESAS (Solo High Stakes) ---
 FIRMS_DATA = {
     "The5ers": {
         "High Stakes (2 Step)": {
@@ -62,13 +62,10 @@ FIRMS_DATA = {
             "20K":  {"cost": 165, "size": 20000,  "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 15},
             "60K":  {"cost": 329, "size": 60000,  "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 25},
             "100K": {"cost": 545, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 8.0, "profit_p2": 5.0, "p1_bonus": 40}
-        },
-        "Hyper Growth (1 Step)": {
-            "5K":   {"cost": 260, "size": 5000,   "daily_dd": 3.0, "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 15},
-            "10K":  {"cost": 450, "size": 10000,  "daily_dd": 3.0, "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 25},
-            "20K":  {"cost": 850, "size": 20000,  "daily_dd": 3.0, "total_dd": 6.0, "profit_p1": 10.0, "profit_p2": 0.0, "p1_bonus": 50}
         }
     },
+    # Mantenemos otras firmas para comparación si el usuario lo desea, 
+    # pero Hyper Growth ha sido eliminado.
     "FTMO": {
         "Swing Challenge": {
             "100K": {"cost": 540, "size": 100000, "daily_dd": 5.0, "total_dd": 10.0, "profit_p1": 10.0, "profit_p2": 5.0, "p1_bonus": 0}
@@ -94,6 +91,7 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
     day_start_equity = curr
     trades_today = 0
     
+    # Límite de pérdida diaria es un MONTO FIJO basado en el Balance Inicial
     fixed_daily_loss_amount = initial_balance * (daily_dd_pct / 100)
     
     while curr > static_limit and curr < target_equity and trades < max_trades:
@@ -123,12 +121,12 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
             if is_error: loss_amount *= 1.5 
             curr -= loss_amount
             
-        # --- DIAGNÓSTICO DE MUERTE (NUEVO) ---
+        # --- DIAGNÓSTICO DE MUERTE ---
         # A. Max DD Estático
         if curr <= static_limit:
             return False, trades, curr, "Max Drawdown (Total)"
             
-        # B. Daily DD (Límite Fijo)
+        # B. Daily DD (Límite Fijo sobre Balance Inicial)
         current_daily_drawdown = day_start_equity - curr
         if current_daily_drawdown >= fixed_daily_loss_amount:
             return False, trades, curr, "Daily Drawdown"
@@ -137,7 +135,7 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
     if curr >= target_equity:
         return True, trades, curr, "Success"
     else:
-        # Si sale del bucle por Timeout (Max Trades)
+        # Si sale del bucle por Timeout
         return False, trades, curr, "Timeout (Lento)"
 
 def calculate_time_metrics(trades_list, trades_per_day):
@@ -164,7 +162,6 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     pass_p1 = 0; pass_p2 = 0
     pass_c1 = 0; pass_c2 = 0; pass_c3 = 0
     
-    # Contadores de Causas de Muerte (Globales para esta cuenta)
     fail_reasons = {"Max Drawdown (Total)": 0, "Daily Drawdown": 0, "Timeout (Lento)": 0}
     
     trades_p1 = []; trades_p2 = []; trades_c1 = []; trades_c2 = []; trades_c3 = []
@@ -172,6 +169,7 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     
     is_2step = firm.get('profit_p2', 0) > 0
     
+    # Payouts Teóricos (Estrictos al Target)
     target_amount = firm['size'] * (w_target / 100)
     split_share = target_amount * 0.80
     pay_val_1 = split_share + firm['cost'] + firm.get('p1_bonus', 0)
@@ -236,16 +234,16 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
     time_c3 = calculate_time_metrics(trades_c3, trades_day)
     total_time_to_cash = time_p1 + time_p2 + time_c1
     
-    # --- LÓGICA DE INVERSIÓN (JUSTIFICACIÓN) ---
+    # LÓGICA DE STOCK
     if prob_c1 >= 98.0: 
         attempts = 1.0
         stock_reason = "Probabilidad > 98%. Estadísticamente 1 cuenta es suficiente."
     elif prob_c1 <= 0.5:
-        attempts = 100.0 # Infinito practicamente
+        attempts = 100.0 
         stock_reason = "Probabilidad nula. Estrategia no viable."
     else: 
         attempts = 100/prob_c1 
-        stock_reason = f"Con una probabilidad de cobro del {prob_c1:.1f}%, la Ley de los Grandes Números dicta que necesitas {math.ceil(attempts)} intentos (100 / {prob_c1:.1f}) para asegurar estadísticamente 1 éxito."
+        stock_reason = f"Con una probabilidad de éxito del {prob_c1:.1f}%, la estadística dicta que necesitas {math.ceil(attempts)} intentos (100 / {prob_c1:.1f}) para asegurar 1 éxito."
 
     inventory = math.ceil(attempts)
     investment = inventory * firm['cost']
@@ -263,7 +261,7 @@ def run_account_simulation(account_data, strategy_params, n_sims_requested):
         "total": pay_val_1
     }
     
-    # Normalizar Diagnóstico de Muerte a %
+    # Diagnóstico Fallos
     total_failures = n_sims - pass_c1
     failure_stats = {}
     if total_failures > 0:
@@ -395,9 +393,9 @@ else:
                         # Fila 1: Probabilidad y Tiempo
                         c1, c2, c3, c4, c5 = st.columns(5)
                         
-                        c1.metric("1. Fase 1", f"{s['prob_p1']:.1f}%", f"⏱ {s['time_p1']:.1f} m", delta_color="off")
+                        c1.metric("1. Fase 1", f"{s['prob_p1']:.1f}%", f"⏱ {s['time_p1']:.1f} Meses", delta_color="off")
                         p2_label = f"{s['prob_p2']:.1f}%" if s['is_2step'] else "N/A"
-                        p2_time = f"⏱ {s['time_p2']:.1f} m" if s['is_2step'] else "-"
+                        p2_time = f"⏱ {s['time_p2']:.1f} Meses" if s['is_2step'] else "-"
                         c2.metric("2. Fase 2", p2_label, p2_time, delta_color="off")
                         c3.metric("3. Retiro 1", f"{s['prob_c1']:.1f}%", f"${s['avg_pay1']:,.0f} | ⏱ {s['time_c1']:.1f} m")
                         c4.metric("4. Retiro 2", f"{s['prob_c2']:.1f}%", f"${s['avg_pay2']:,.0f} | ⏱ {s['time_c2']:.1f} m")
@@ -405,10 +403,9 @@ else:
                         
                         st.markdown("---")
                         
-                        # --- NUEVO: DIAGNÓSTICO DE MUERTE ---
+                        # DIAGNÓSTICO DE MUERTE
                         if s['total_failures'] > 0:
-                            st.caption("💀 **Feedback de Por qué fallé (Distribución de causas):**")
-                            # Barras de progreso simples
+                            st.caption("💀 **Feedback de Fallo (Distribución de causas):**")
                             f_cols = st.columns(3)
                             fail_stats = s['failure_stats']
                             
@@ -430,8 +427,7 @@ else:
                             st.success("🎉 ¡Felicidades! En esta simulación no hubo fallos (Prob 100%).")
 
                         st.markdown("---")
-                        
-                        # --- NUEVO: RACIONAL DE INVERSIÓN ---
+                        # RACIONAL DE STOCK
                         st.caption("💡 **Racional de Inversión:**")
                         st.info(f"**Stock Sugerido: {s['inventory']} Cuentas.** \n\n {s['stock_reason']}")
                         
