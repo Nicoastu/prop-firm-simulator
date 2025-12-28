@@ -171,10 +171,7 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
     pay_val_3 = split_share
     
     is_2step = account_data.get('profit_p2', 0) > 0
-    
-    # Contadores para Probabilidades de FASE (Independientes)
-    pass_p1_count = 0
-    pass_p2_count = 0
+    pass_p1_count = 0; pass_p2_count = 0
     
     for _ in range(n_sims):
         # 1. FASE 1
@@ -184,7 +181,7 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
             trades_p1.append(t1)
         else:
             if cause1 in fail_reasons: fail_reasons[cause1] += 1
-            continue # Si falla F1, next sim
+            continue
         
         # 2. FASE 2
         if is_2step:
@@ -196,23 +193,21 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
                 if cause2 in fail_reasons: fail_reasons[cause2] += 1
                 continue
         else:
-            pass_p2_count += 1 # Si es 1-step, P2 se asume pasada
+            pass_p2_count += 1
             
-        # 3. FONDEO - COBRO 1
+        # 3. FONDEO
         ok_c1, tc1, _, cause3 = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
         if ok_c1:
             pass_c1 += 1
             trades_c1.append(tc1)
             sum_pay1 += pay_val_1 
             
-            # COBRO 2
             ok_c2, tc2, _, _ = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
             if ok_c2:
                 pass_c2 += 1
                 trades_c2.append(tc2)
                 sum_pay2 += pay_val_2
                 
-                # COBRO 3
                 ok_c3, tc3, _, _ = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
                 if ok_c3:
                     pass_c3 += 1
@@ -221,7 +216,6 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
         else:
             if cause3 in fail_reasons: fail_reasons[cause3] += 1
 
-    # Cálculo de Probabilidades
     prob_p1 = (pass_p1_count/n_sims)*100
     prob_p2 = (pass_p2_count/n_sims)*100 if is_2step else 100.0
     prob_c1 = (pass_c1/n_sims)*100
@@ -264,7 +258,7 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
         "is_2step": is_2step
     }
 
-# --- FUNCIÓN VISUALIZADORA (Con Soporte Delta TOTAL) ---
+# --- FUNCIÓN VISUALIZADORA (MEJORADA CON EXPLICACIONES) ---
 def display_rich_results(results_list, title_prefix=""):
     g_inv = 0; g_pay1 = 0; g_pay2 = 0; g_pay3 = 0
     for res in results_list:
@@ -273,19 +267,39 @@ def display_rich_results(results_list, title_prefix=""):
         g_pay2 += res['stats']['avg_pay2']
         g_pay3 += res['stats']['avg_pay3']
     
+    # KPIs Globales
     st.markdown(f"### 📊 {title_prefix} - Resultados Consolidados")
     m1, m2, m3 = st.columns(3)
-    m1.metric("Inversión Total (Riesgo)", f"${g_inv:,.0f}")
-    total_potential = g_pay1 + g_pay2 + g_pay3
-    roi = ((total_potential - g_inv)/g_inv)*100 if g_inv > 0 else 0
-    m2.metric("Retorno Potencial (Ciclo 1)", f"${total_potential:,.0f}")
-    m3.metric("ROI Potencial", f"{roi:.1f}%")
     
-    st.markdown("### 💰 Proyección de Flujo de Caja")
+    # METRICA 1: INVERSION TOTAL -> PRESUPUESTO DE SEGURIDAD
+    m1.metric(
+        "Presupuesto Sugerido (Seguridad)", 
+        f"${g_inv:,.0f}",
+        help="Este monto no es lo que cuesta 1 cuenta. Es el capital total sugerido para comprar los 'intentos' necesarios (cuentas extra) según tu probabilidad de fallo. Si tu prob. es baja, el sistema sugiere comprar más intentos para asegurar el éxito."
+    )
+    
+    # METRICA 2: RETORNO CICLO 1 -> GANANCIA TOTAL PROYECTADA
+    total_potential = g_pay1 + g_pay2 + g_pay3
+    m2.metric(
+        "Ganancia Total Proyectada (3 Meses)", 
+        f"${total_potential:,.0f}",
+        help="Es la suma estimada de lo que retirarías en el Mes 1, Mes 2 y Mes 3 combinados, si logras mantener la constancia."
+    )
+    
+    # METRICA 3: ROI
+    roi = ((total_potential - g_inv)/g_inv)*100 if g_inv > 0 else 0
+    m3.metric(
+        "ROI Estimado", 
+        f"{roi:.1f}%",
+        help="Retorno sobre la Inversión. Por cada $1 que arriesgas en pruebas, ¿cuántos $ esperas ganar limpios tras 3 meses?"
+    )
+    
+    # Flujo de Caja
+    st.markdown("### 💰 Proyección de Flujo de Caja (Paso a Paso)")
     fc1, fc2, fc3 = st.columns(3)
-    fc1.metric("Retiro 1 (Recuperación)", f"${g_pay1:,.0f}")
-    fc2.metric("Retiro 2 (Beneficio)", f"${g_pay2:,.0f}")
-    fc3.metric("Retiro 3 (Consistencia)", f"${g_pay3:,.0f}")
+    fc1.metric("Retiro 1 (Recuperación)", f"${g_pay1:,.0f}", help="Incluye Profit Split + Reembolso del Fee + Bonos.")
+    fc2.metric("Retiro 2 (Beneficio Puro)", f"${g_pay2:,.0f}", help="Profit Split del segundo mes.")
+    fc3.metric("Retiro 3 (Consistencia)", f"${g_pay3:,.0f}", help="Profit Split del tercer mes.")
     
     st.divider()
     st.subheader("🔍 Desglose Detallado por Cuenta")
@@ -294,25 +308,18 @@ def display_rich_results(results_list, title_prefix=""):
         s = res['stats']
         bk = s['first_pay_est']
         
-        # --- CÁLCULO DE DELTAS PARA TODAS LAS MÉTRICAS ---
-        deltas = {
-            'p1': None, 'p2': None, 'c1': None, 'c2': None, 'c3': None, 'money': None
-        }
-        
+        # Lógica Delta
+        deltas = {'p1': None, 'p2': None, 'c1': None, 'c2': None, 'c3': None, 'money': None}
         if 'baseline' in res:
             b = res['baseline']
-            
-            # Helper para calcular delta de probabilidad
             def calc_delta(curr, base):
                 diff = curr - base
                 return f"{diff:+.1f}%" if abs(diff) > 0.1 else None
-            
             deltas['p1'] = calc_delta(s['prob_p1'], b['prob_p1'])
             deltas['p2'] = calc_delta(s['prob_p2'], b['prob_p2'])
             deltas['c1'] = calc_delta(s['prob_c1'], b['prob_c1'])
             deltas['c2'] = calc_delta(s['prob_c2'], b['prob_c2'])
             deltas['c3'] = calc_delta(s['prob_c3'], b['prob_c3'])
-            
             diff_money = s['avg_pay1'] - b['avg_pay1']
             if abs(diff_money) > 10: deltas['money'] = f"{diff_money:+.0f}"
 
@@ -321,30 +328,27 @@ def display_rich_results(results_list, title_prefix=""):
              header_text += f" (Desde: ${res['start_bal']:,.0f})"
         
         with st.expander(f"{header_text} | Prob. Cobro: {s['prob_c1']:.1f}%"):
-            # AHORA SON 6 COLUMNAS PARA MOSTRAR TODO
             cols = st.columns(6)
             
             # FASE 1
-            cols[0].metric("1. Fase 1", f"{s['prob_p1']:.1f}%", delta=deltas['p1'])
+            cols[0].metric("1. Fase 1", f"{s['prob_p1']:.1f}%", delta=deltas['p1'], help="Probabilidad de pasar la Fase 1.")
             cols[0].caption(f"⏱ {s['time_p1']:.1f} m")
             
             # FASE 2
             p2_val = f"{s['prob_p2']:.1f}%" if s['is_2step'] else "N/A"
-            cols[1].metric("2. Fase 2", p2_val, delta=deltas['p2'])
+            cols[1].metric("2. Fase 2", p2_val, delta=deltas['p2'], help="Probabilidad de pasar la Fase 2.")
             cols[1].caption(f"⏱ {s['time_p2']:.1f} m" if s['is_2step'] else "-")
             
             # STOCK
-            cols[2].metric("3. Stock", f"{s['inventory']} u.", f"Inv: ${s['investment']:,.0f}", delta_color="off")
+            cols[2].metric("3. Intentos", f"{s['inventory']} u.", f"Inv: ${s['investment']:,.0f}", delta_color="off", help="Número de cuentas recomendadas a comprar para asegurar el éxito estadístico.")
             
-            # RETIRO 1
-            cols[3].metric("4. Retiro 1", f"{s['prob_c1']:.1f}%", delta=deltas['c1'])
+            # RETIROS
+            cols[3].metric("4. Retiro 1", f"{s['prob_c1']:.1f}%", delta=deltas['c1'], help="Probabilidad de llegar al primer cobro.")
             cols[3].caption(f"${s['avg_pay1']:,.0f} | {s['time_c1']:.1f} m")
             
-            # RETIRO 2
             cols[4].metric("5. Retiro 2", f"{s['prob_c2']:.1f}%", delta=deltas['c2'])
             cols[4].caption(f"${s['avg_pay2']:,.0f} | {s['time_c2']:.1f} m")
             
-            # RETIRO 3
             cols[5].metric("6. Retiro 3", f"{s['prob_c3']:.1f}%", delta=deltas['c3'])
             cols[5].caption(f"${s['avg_pay3']:,.0f} | {s['time_c3']:.1f} m")
             
@@ -501,7 +505,6 @@ else:
                 if st.button("🚀 Proyectar desde Balance Actual (REAL)", type="primary", use_container_width=True):
                     with st.spinner("Ejecutando Montecarlo desde tu realidad..."):
                         results = []
-                        # Cache Teórico
                         theoretical_cache = {}
                         if st.session_state.get('sim_results_theoretical'):
                             for t_res in st.session_state['sim_results_theoretical']:
@@ -512,7 +515,7 @@ else:
                             start_bal_real = item['data']['size'] + sum(t['net'] for t in item['journal'])
                             s_real = run_account_simulation(item['data'], item['params'], sim_precision, start_bal_real)
                             
-                            # Baseline
+                            # Baseline check
                             if item['full_name'] in theoretical_cache:
                                 s_theory = theoretical_cache[item['full_name']]
                             else:
