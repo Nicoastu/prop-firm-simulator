@@ -172,36 +172,47 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
     
     is_2step = account_data.get('profit_p2', 0) > 0
     
+    # Contadores para Probabilidades de FASE (Independientes)
+    pass_p1_count = 0
+    pass_p2_count = 0
+    
     for _ in range(n_sims):
-        # 1. FASE ACTUAL
+        # 1. FASE 1
         ok1, t1, _, cause1 = simulate_phase(initial_size, current_balance_real, risk, wr, rr, account_data['profit_p1'], account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day)
-        
-        if not ok1:
+        if ok1:
+            pass_p1_count += 1
+            trades_p1.append(t1)
+        else:
             if cause1 in fail_reasons: fail_reasons[cause1] += 1
-            continue
-        trades_p1.append(t1)
+            continue # Si falla F1, next sim
         
         # 2. FASE 2
         if is_2step:
             ok2, t2, _, cause2 = simulate_phase(initial_size, initial_size, risk, wr, rr, account_data['profit_p2'], account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day)
-            if not ok2:
+            if ok2:
+                pass_p2_count += 1
+                trades_p2.append(t2)
+            else:
                 if cause2 in fail_reasons: fail_reasons[cause2] += 1
                 continue
-            trades_p2.append(t2)
+        else:
+            pass_p2_count += 1 # Si es 1-step, P2 se asume pasada
             
-        # 3. FONDEO
+        # 3. FONDEO - COBRO 1
         ok_c1, tc1, _, cause3 = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
         if ok_c1:
             pass_c1 += 1
             trades_c1.append(tc1)
             sum_pay1 += pay_val_1 
             
+            # COBRO 2
             ok_c2, tc2, _, _ = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
             if ok_c2:
                 pass_c2 += 1
                 trades_c2.append(tc2)
                 sum_pay2 += pay_val_2
                 
+                # COBRO 3
                 ok_c3, tc3, _, _ = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
                 if ok_c3:
                     pass_c3 += 1
@@ -210,6 +221,9 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
         else:
             if cause3 in fail_reasons: fail_reasons[cause3] += 1
 
+    # Cálculo de Probabilidades
+    prob_p1 = (pass_p1_count/n_sims)*100
+    prob_p2 = (pass_p2_count/n_sims)*100 if is_2step else 100.0
     prob_c1 = (pass_c1/n_sims)*100
     prob_c2 = (pass_c2/n_sims)*100
     prob_c3 = (pass_c3/n_sims)*100
@@ -241,6 +255,7 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
         for k, v in fail_reasons.items(): fail_stats[k] = (v/total_failures)*100
             
     return {
+        "prob_p1": prob_p1, "prob_p2": prob_p2,
         "prob_c1": prob_c1, "prob_c2": prob_c2, "prob_c3": prob_c3,
         "avg_pay1": avg_pay1, "avg_pay2": avg_pay2, "avg_pay3": avg_pay3,
         "time_p1": time_p1, "time_p2": time_p2, "time_c1": time_c1, "time_c2": time_c2, "time_c3": time_c3,
@@ -249,7 +264,7 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
         "is_2step": is_2step
     }
 
-# --- FUNCIÓN VISUALIZADORA (Con Soporte Delta) ---
+# --- FUNCIÓN VISUALIZADORA (Con Soporte Delta TOTAL) ---
 def display_rich_results(results_list, title_prefix=""):
     g_inv = 0; g_pay1 = 0; g_pay2 = 0; g_pay3 = 0
     for res in results_list:
@@ -279,43 +294,59 @@ def display_rich_results(results_list, title_prefix=""):
         s = res['stats']
         bk = s['first_pay_est']
         
-        # LÓGICA DE COMPARACIÓN (DELTA)
-        # Si existe 'baseline' (Teórico) y estamos en modo Real, calculamos deltas
-        d_prob = None
-        d_time = None
-        d_money = None
+        # --- CÁLCULO DE DELTAS PARA TODAS LAS MÉTRICAS ---
+        deltas = {
+            'p1': None, 'p2': None, 'c1': None, 'c2': None, 'c3': None, 'money': None
+        }
         
         if 'baseline' in res:
             b = res['baseline']
-            # Prob: Más es mejor
-            diff_prob = s['prob_c1'] - b['prob_c1']
-            if abs(diff_prob) > 0.1: d_prob = f"{diff_prob:+.1f}%"
             
-            # Time: Menos es mejor (Inverse)
-            diff_time = s['time_c1'] - b['time_c1']
-            if abs(diff_time) > 0.1: d_time = f"{diff_time:+.1f} m"
+            # Helper para calcular delta de probabilidad
+            def calc_delta(curr, base):
+                diff = curr - base
+                return f"{diff:+.1f}%" if abs(diff) > 0.1 else None
             
-            # Money: Más es mejor
+            deltas['p1'] = calc_delta(s['prob_p1'], b['prob_p1'])
+            deltas['p2'] = calc_delta(s['prob_p2'], b['prob_p2'])
+            deltas['c1'] = calc_delta(s['prob_c1'], b['prob_c1'])
+            deltas['c2'] = calc_delta(s['prob_c2'], b['prob_c2'])
+            deltas['c3'] = calc_delta(s['prob_c3'], b['prob_c3'])
+            
             diff_money = s['avg_pay1'] - b['avg_pay1']
-            if abs(diff_money) > 10: d_money = f"{diff_money:+.0f}"
+            if abs(diff_money) > 10: deltas['money'] = f"{diff_money:+.0f}"
 
         header_text = f"📈 {res['name']}"
         if 'start_bal' in res:
              header_text += f" (Desde: ${res['start_bal']:,.0f})"
         
         with st.expander(f"{header_text} | Prob. Cobro: {s['prob_c1']:.1f}%"):
-            c1, c2, c3, c4, c5 = st.columns(5)
-            total_time_eval = s['time_p1'] + s['time_p2']
-            c1.metric("1. Fases Eval", "En Proceso", f"⏱ {total_time_eval:.1f} m", delta_color="off")
-            c2.metric("2. Stock Req.", f"{s['inventory']} u.", f"Inv: ${s['investment']:,.0f}", delta_color="off")
+            # AHORA SON 6 COLUMNAS PARA MOSTRAR TODO
+            cols = st.columns(6)
             
-            # 1er Retiro CON DELTA
-            c3.metric("1er Retiro", f"{s['prob_c1']:.1f}%", delta=d_prob)
-            c3.caption(f"${s['avg_pay1']:,.0f} | ⏱ {s['time_c1']:.1f} m") # Caption para detalle secundario
+            # FASE 1
+            cols[0].metric("1. Fase 1", f"{s['prob_p1']:.1f}%", delta=deltas['p1'])
+            cols[0].caption(f"⏱ {s['time_p1']:.1f} m")
             
-            # 2do y 3er Retiro
-            c4.metric("2do Retiro", f"{s['prob_c2']:.1f}%", f"${s['avg_pay2']:,.0f} | ⏱ {s['time_c2']:.1f} m")
-            c5.metric("3er Retiro", f"{s['prob_c3']:.1f}%", f"${s['avg_pay3']:,.0f} | ⏱ {s['time_c3']:.1f} m")
+            # FASE 2
+            p2_val = f"{s['prob_p2']:.1f}%" if s['is_2step'] else "N/A"
+            cols[1].metric("2. Fase 2", p2_val, delta=deltas['p2'])
+            cols[1].caption(f"⏱ {s['time_p2']:.1f} m" if s['is_2step'] else "-")
+            
+            # STOCK
+            cols[2].metric("3. Stock", f"{s['inventory']} u.", f"Inv: ${s['investment']:,.0f}", delta_color="off")
+            
+            # RETIRO 1
+            cols[3].metric("4. Retiro 1", f"{s['prob_c1']:.1f}%", delta=deltas['c1'])
+            cols[3].caption(f"${s['avg_pay1']:,.0f} | {s['time_c1']:.1f} m")
+            
+            # RETIRO 2
+            cols[4].metric("5. Retiro 2", f"{s['prob_c2']:.1f}%", delta=deltas['c2'])
+            cols[4].caption(f"${s['avg_pay2']:,.0f} | {s['time_c2']:.1f} m")
+            
+            # RETIRO 3
+            cols[5].metric("6. Retiro 3", f"{s['prob_c3']:.1f}%", delta=deltas['c3'])
+            cols[5].caption(f"${s['avg_pay3']:,.0f} | {s['time_c3']:.1f} m")
             
             st.markdown("---")
             if s['total_failures'] > 0:
@@ -334,7 +365,7 @@ def display_rich_results(results_list, title_prefix=""):
             col_pay1.metric("Split", f"${bk['split']:,.0f}")
             col_pay2.metric("Refund", f"+${bk['refund']}")
             col_pay3.metric("Bonus", f"+${bk['bonus']}")
-            col_pay4.metric("TOTAL", f"${bk['total']:,.0f}", delta=d_money) # Delta en dinero tambien
+            col_pay4.metric("TOTAL", f"${bk['total']:,.0f}", delta=deltas['money'])
 
 # --- UI ---
 if not st.session_state['logged_in']:
@@ -459,7 +490,7 @@ else:
                         st.dataframe(df_j.tail(5), use_container_width=True)
                     else: st.info("Sin trades registrados.")
 
-# 3. PROYECCIÓN REAL (OPTIMIZADA)
+        # 3. PROYECCIÓN REAL
         with tab_real:
             total_trades_count = sum(len(item.get('journal', [])) for item in st.session_state['portfolio'])
             
@@ -470,35 +501,28 @@ else:
                 if st.button("🚀 Proyectar desde Balance Actual (REAL)", type="primary", use_container_width=True):
                     with st.spinner("Ejecutando Montecarlo desde tu realidad..."):
                         results = []
-                        
-                        # --- LÓGICA DE REUTILIZACIÓN ---
-                        # Verificamos si ya tenemos la teórica en caché
+                        # Cache Teórico
                         theoretical_cache = {}
                         if st.session_state.get('sim_results_theoretical'):
-                            # Creamos un mapa rápido {nombre_cuenta: stats_teoricos}
                             for t_res in st.session_state['sim_results_theoretical']:
                                 theoretical_cache[t_res['name']] = t_res['stats']
                         
                         for item in st.session_state['portfolio']:
                             if 'journal' not in item: item['journal'] = []
-                            
-                            # 1. Simulación Real (Siempre se calcula nueva)
                             start_bal_real = item['data']['size'] + sum(t['net'] for t in item['journal'])
                             s_real = run_account_simulation(item['data'], item['params'], sim_precision, start_bal_real)
                             
-                            # 2. Simulación Base (Teórica)
-                            # Intentamos sacarla del caché, si no existe, la calculamos on-the-fly
+                            # Baseline
                             if item['full_name'] in theoretical_cache:
                                 s_theory = theoretical_cache[item['full_name']]
                             else:
-                                # Cálculo forzoso solo si no existe previo
                                 s_theory = run_account_simulation(item['data'], item['params'], sim_precision, item['data']['size'])
                             
                             results.append({
                                 "name": item['full_name'], 
                                 "stats": s_real, 
                                 "start_bal": start_bal_real,
-                                "baseline": s_theory # Aquí pasamos la base para el Delta
+                                "baseline": s_theory
                             })
                         
                         st.session_state['sim_results_real'] = results
