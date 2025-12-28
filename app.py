@@ -173,7 +173,7 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
     is_2step = account_data.get('profit_p2', 0) > 0
     
     for _ in range(n_sims):
-        # 1. FASE ACTUAL (Simulada desde el balance real)
+        # 1. FASE ACTUAL
         ok1, t1, _, cause1 = simulate_phase(initial_size, current_balance_real, risk, wr, rr, account_data['profit_p1'], account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day)
         
         if not ok1:
@@ -249,7 +249,7 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
         "is_2step": is_2step
     }
 
-# --- FUNCIÓN VISUALIZADORA (Reutilizable) ---
+# --- FUNCIÓN VISUALIZADORA (Con Soporte Delta) ---
 def display_rich_results(results_list, title_prefix=""):
     g_inv = 0; g_pay1 = 0; g_pay2 = 0; g_pay3 = 0
     for res in results_list:
@@ -279,6 +279,26 @@ def display_rich_results(results_list, title_prefix=""):
         s = res['stats']
         bk = s['first_pay_est']
         
+        # LÓGICA DE COMPARACIÓN (DELTA)
+        # Si existe 'baseline' (Teórico) y estamos en modo Real, calculamos deltas
+        d_prob = None
+        d_time = None
+        d_money = None
+        
+        if 'baseline' in res:
+            b = res['baseline']
+            # Prob: Más es mejor
+            diff_prob = s['prob_c1'] - b['prob_c1']
+            if abs(diff_prob) > 0.1: d_prob = f"{diff_prob:+.1f}%"
+            
+            # Time: Menos es mejor (Inverse)
+            diff_time = s['time_c1'] - b['time_c1']
+            if abs(diff_time) > 0.1: d_time = f"{diff_time:+.1f} m"
+            
+            # Money: Más es mejor
+            diff_money = s['avg_pay1'] - b['avg_pay1']
+            if abs(diff_money) > 10: d_money = f"{diff_money:+.0f}"
+
         header_text = f"📈 {res['name']}"
         if 'start_bal' in res:
              header_text += f" (Desde: ${res['start_bal']:,.0f})"
@@ -288,7 +308,12 @@ def display_rich_results(results_list, title_prefix=""):
             total_time_eval = s['time_p1'] + s['time_p2']
             c1.metric("1. Fases Eval", "En Proceso", f"⏱ {total_time_eval:.1f} m", delta_color="off")
             c2.metric("2. Stock Req.", f"{s['inventory']} u.", f"Inv: ${s['investment']:,.0f}", delta_color="off")
-            c3.metric("1er Retiro", f"{s['prob_c1']:.1f}%", f"${s['avg_pay1']:,.0f} | ⏱ {s['time_c1']:.1f} m")
+            
+            # 1er Retiro CON DELTA
+            c3.metric("1er Retiro", f"{s['prob_c1']:.1f}%", delta=d_prob)
+            c3.caption(f"${s['avg_pay1']:,.0f} | ⏱ {s['time_c1']:.1f} m") # Caption para detalle secundario
+            
+            # 2do y 3er Retiro
             c4.metric("2do Retiro", f"{s['prob_c2']:.1f}%", f"${s['avg_pay2']:,.0f} | ⏱ {s['time_c2']:.1f} m")
             c5.metric("3er Retiro", f"{s['prob_c3']:.1f}%", f"${s['avg_pay3']:,.0f} | ⏱ {s['time_c3']:.1f} m")
             
@@ -309,7 +334,7 @@ def display_rich_results(results_list, title_prefix=""):
             col_pay1.metric("Split", f"${bk['split']:,.0f}")
             col_pay2.metric("Refund", f"+${bk['refund']}")
             col_pay3.metric("Bonus", f"+${bk['bonus']}")
-            col_pay4.metric("TOTAL", f"${bk['total']:,.0f}", delta="Neto")
+            col_pay4.metric("TOTAL", f"${bk['total']:,.0f}", delta=d_money) # Delta en dinero tambien
 
 # --- UI ---
 if not st.session_state['logged_in']:
@@ -340,8 +365,18 @@ else:
     with st.sidebar:
         st.header("1. Global")
         sim_precision = st.select_slider("Simulaciones", options=[500, 1000, 5000], value=1000)
-        if st.button("💾 Guardar Todo", type="primary"):
-            if save_portfolio_db(st.session_state['username'], st.session_state['portfolio']): st.toast("Guardado")
+        
+        c_save, c_load = st.columns(2)
+        with c_save:
+            if st.button("💾 Guardar", type="secondary", use_container_width=True):
+                if save_portfolio_db(st.session_state['username'], st.session_state['portfolio']): st.toast("Guardado")
+        with c_load:
+            if st.button("🔄 Restaurar", type="secondary", use_container_width=True):
+                saved = load_portfolio_db(st.session_state['username'])
+                if saved:
+                    st.session_state['portfolio'] = saved
+                    st.rerun()
+                else: st.warning("No hay datos guardados.")
         
         st.divider()
         st.header("2. Catálogo")
@@ -350,12 +385,7 @@ else:
         s_size = st.selectbox("Capital", list(FIRMS_DATA[s_firm][s_prog].keys()))
         d = FIRMS_DATA[s_firm][s_prog][s_size]
         
-        with st.container(border=True):
-            st.caption("Reglas:")
-            c1, c2 = st.columns(2)
-            c1.markdown(f"💰 **${d['cost']}**"); c2.markdown(f"📉 **{d['total_dd']}%**")
-        
-        if st.button("➕ Agregar Cuenta"):
+        if st.button("➕ Agregar Cuenta", use_container_width=True):
             st.session_state['portfolio'].append({
                 "id": int(time.time()*1000),
                 "full_name": f"{s_firm} {s_prog} ({s_size})",
@@ -366,14 +396,13 @@ else:
             st.toast("Agregada")
 
     if not st.session_state['portfolio']:
-        st.info("Portafolio vacío. Agrega una cuenta.")
+        st.info("Portafolio vacío. Agrega una cuenta para comenzar.")
     else:
-        # PESTAÑAS RENOMBRADAS
         tab_teorica, tab_journal, tab_real = st.tabs(["Proyección Teórica Portafolio", "Diario / Ejecución", "Proyección Real Portafolio"])
         
-        # 1. PROYECCIÓN TEÓRICA (CONFIGURACIÓN)
+        # 1. TEÓRICA
         with tab_teorica:
-            st.subheader("Parametrización del Portafolio")
+            st.subheader("Parametrización y Escenarios Ideales")
             for i, item in enumerate(st.session_state['portfolio']):
                 if 'journal' not in item: item['journal'] = []
                 with st.expander(f"⚙️ {item['full_name']} (Config)", expanded=False):
@@ -394,7 +423,6 @@ else:
                 with st.spinner("Calculando Escenario Ideal..."):
                     results = []
                     for item in st.session_state['portfolio']:
-                        # Simulación Teórica: Balance inicial limpio
                         start_bal = item['data']['size']
                         s = run_account_simulation(item['data'], item['params'], sim_precision, start_bal)
                         results.append({"name": item['full_name'], "stats": s, "start_bal": start_bal})
@@ -429,26 +457,49 @@ else:
                         c2.metric("P&L Acumulado", f"${total_pnl:,.2f}", delta_color="normal")
                         c3.metric("Balance ACTUAL", f"${current_bal:,.2f}")
                         st.dataframe(df_j.tail(5), use_container_width=True)
-                    else: st.info("Sin trades.")
+                    else: st.info("Sin trades registrados.")
 
-        # 3. PROYECCIÓN REAL
+# 3. PROYECCIÓN REAL (OPTIMIZADA)
         with tab_real:
-            # Validación: ¿Existen trades?
             total_trades_count = sum(len(item.get('journal', [])) for item in st.session_state['portfolio'])
             
             if total_trades_count == 0:
                 st.info("⚠️ Para generar una Proyección Real, primero debes registrar al menos una operación en la pestaña 'Diario / Ejecución'.")
-                st.caption("Esta sección proyecta tu futuro basándose en tu Balance Actual (Diario). Sin datos reales, usa la pestaña 'Proyección Teórica'.")
+                st.caption("Esta sección compara tu realidad vs el plan ideal.")
             else:
                 if st.button("🚀 Proyectar desde Balance Actual (REAL)", type="primary", use_container_width=True):
                     with st.spinner("Ejecutando Montecarlo desde tu realidad..."):
                         results = []
+                        
+                        # --- LÓGICA DE REUTILIZACIÓN ---
+                        # Verificamos si ya tenemos la teórica en caché
+                        theoretical_cache = {}
+                        if st.session_state.get('sim_results_theoretical'):
+                            # Creamos un mapa rápido {nombre_cuenta: stats_teoricos}
+                            for t_res in st.session_state['sim_results_theoretical']:
+                                theoretical_cache[t_res['name']] = t_res['stats']
+                        
                         for item in st.session_state['portfolio']:
                             if 'journal' not in item: item['journal'] = []
-                            # Balance Real
-                            start_bal = item['data']['size'] + sum(t['net'] for t in item['journal'])
-                            s = run_account_simulation(item['data'], item['params'], sim_precision, start_bal)
-                            results.append({"name": item['full_name'], "stats": s, "start_bal": start_bal})
+                            
+                            # 1. Simulación Real (Siempre se calcula nueva)
+                            start_bal_real = item['data']['size'] + sum(t['net'] for t in item['journal'])
+                            s_real = run_account_simulation(item['data'], item['params'], sim_precision, start_bal_real)
+                            
+                            # 2. Simulación Base (Teórica)
+                            # Intentamos sacarla del caché, si no existe, la calculamos on-the-fly
+                            if item['full_name'] in theoretical_cache:
+                                s_theory = theoretical_cache[item['full_name']]
+                            else:
+                                # Cálculo forzoso solo si no existe previo
+                                s_theory = run_account_simulation(item['data'], item['params'], sim_precision, item['data']['size'])
+                            
+                            results.append({
+                                "name": item['full_name'], 
+                                "stats": s_real, 
+                                "start_bal": start_bal_real,
+                                "baseline": s_theory # Aquí pasamos la base para el Delta
+                            })
                         
                         st.session_state['sim_results_real'] = results
                 
