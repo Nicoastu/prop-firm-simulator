@@ -91,12 +91,13 @@ FIRMS_DATA = {
     }
 }
 
-# --- SIMULACIÓN (ADAPTATIVA) ---
+# --- SIMULACIÓN (MOTOR COMPLETO RESTAURADO) ---
 def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, target_pct, max_dd_pct, daily_dd_pct, comm, sl_min, sl_max, trades_per_day, is_funded=False):
     curr = current_balance
     target_equity = initial_balance + (initial_balance * (target_pct/100))
     static_limit = initial_balance - (initial_balance * (max_dd_pct/100))
     
+    # Chequeos inmediatos por si el usuario ya perdió/ganó en la vida real
     if curr <= static_limit: return False, 0, curr, "Ya perdida (Real)"
     if curr >= target_equity: return True, 0, curr, "Ya ganada (Real)"
 
@@ -142,7 +143,15 @@ def simulate_phase(initial_balance, current_balance, risk_pct, win_rate, rr, tar
     if curr >= target_equity: return True, trades, curr, "Success"
     else: return False, trades, curr, "Timeout"
 
+def calculate_time_metrics(trades_list, trades_per_day):
+    if not trades_list: return 0.0
+    avg_trades = sum(trades_list) / len(trades_list)
+    trading_days = avg_trades / trades_per_day
+    months = trading_days / 20.0
+    return months
+
 def run_account_simulation(account_data, strategy_params, n_sims, current_balance_real):
+    # Restauramos toda la lógica rica de la versión anterior
     wr = strategy_params['win_rate']; rr = strategy_params['rr']
     risk = strategy_params['risk']; w_target = strategy_params['withdrawal_target']
     comm = strategy_params['comm']; trades_day = strategy_params['trades_day']
@@ -153,41 +162,105 @@ def run_account_simulation(account_data, strategy_params, n_sims, current_balanc
     pass_c1 = 0; pass_c2 = 0; pass_c3 = 0
     sum_pay1 = 0; sum_pay2 = 0; sum_pay3 = 0
     
-    target_profit_amount = initial_size * (w_target / 100)
-    split_share = target_profit_amount * 0.80
-    payout_val = split_share + account_data['cost'] + account_data.get('p1_bonus', 0)
-    
     fail_reasons = {"Max Drawdown": 0, "Daily Drawdown": 0, "Timeout": 0, "Ya perdida (Real)": 0}
     
+    trades_p1 = []; trades_p2 = []; trades_c1 = []; trades_c2 = []; trades_c3 = []
+    
+    # Target monetario exacto
+    target_profit_amount = initial_size * (w_target / 100)
+    split_share = target_profit_amount * 0.80
+    
+    pay_val_1 = split_share + account_data['cost'] + account_data.get('p1_bonus', 0)
+    pay_val_2 = split_share
+    pay_val_3 = split_share
+    
+    is_2step = account_data.get('profit_p2', 0) > 0
+    
     for _ in range(n_sims):
-        ok1, _, bal1, cause1 = simulate_phase(initial_size, current_balance_real, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
+        # 1. TRAYECTO AL PRIMER COBRO (Usando Balance Real)
+        # Nota: Simplificamos asumiendo que estamos en la fase crítica inicial.
+        # Si es cuenta de evaluación, simulamos pasar F1 -> F2 -> Cobro.
         
-        if ok1:
-            pass_c1 += 1
-            sum_pay1 += payout_val 
-            
-            ok2, _, bal2, _ = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
-            if ok2:
-                pass_c2 += 1
-                sum_pay2 += split_share 
-                
-                ok3, _, _, _ = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
-                if ok3:
-                    pass_c3 += 1
-                    sum_pay3 += split_share
-        else:
+        # FASE 1 (Con balance real)
+        ok1, t1, _, cause1 = simulate_phase(initial_size, current_balance_real, risk, wr, rr, account_data['profit_p1'], account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day)
+        
+        if not ok1:
             if cause1 in fail_reasons: fail_reasons[cause1] += 1
+            continue
+        trades_p1.append(t1)
+        
+        # FASE 2
+        if is_2step:
+            ok2, t2, _, cause2 = simulate_phase(initial_size, initial_size, risk, wr, rr, account_data['profit_p2'], account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day)
+            if not ok2:
+                if cause2 in fail_reasons: fail_reasons[cause2] += 1
+                continue
+            trades_p2.append(t2)
+            
+        # FASE FONDEADA - COBRO 1
+        ok_c1, tc1, _, cause3 = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
+        
+        if ok_c1:
+            pass_c1 += 1
+            trades_c1.append(tc1)
+            sum_pay1 += pay_val_1 
+            
+            # COBRO 2
+            ok_c2, tc2, _, _ = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
+            if ok_c2:
+                pass_c2 += 1
+                trades_c2.append(tc2)
+                sum_pay2 += pay_val_2
+                
+                # COBRO 3
+                ok_c3, tc3, _, _ = simulate_phase(initial_size, initial_size, risk, wr, rr, w_target, account_data['total_dd'], daily_dd, comm, sl_min, sl_max, trades_day, is_funded=True)
+                if ok_c3:
+                    pass_c3 += 1
+                    trades_c3.append(tc3)
+                    sum_pay3 += pay_val_3
+        else:
+            if cause3 in fail_reasons: fail_reasons[cause3] += 1
 
+    # ESTADÍSTICAS FINALES
     prob_c1 = (pass_c1/n_sims)*100
     prob_c2 = (pass_c2/n_sims)*100
     prob_c3 = (pass_c3/n_sims)*100
     
     avg_pay1 = sum_pay1 / pass_c1 if pass_c1 > 0 else 0
+    avg_pay2 = sum_pay2 / pass_c2 if pass_c2 > 0 else 0
+    avg_pay3 = sum_pay3 / pass_c3 if pass_c3 > 0 else 0
     
+    # Tiempos
+    time_p1 = calculate_time_metrics(trades_p1, trades_day)
+    time_p2 = calculate_time_metrics(trades_p2, trades_day) if is_2step else 0
+    time_c1 = calculate_time_metrics(trades_c1, trades_day)
+    time_c2 = calculate_time_metrics(trades_c2, trades_day)
+    time_c3 = calculate_time_metrics(trades_c3, trades_day)
+    
+    # Racional Stock
+    if prob_c1 >= 98.0: attempts = 1.0; reason="Probabilidad > 98%. 1 cuenta basta."
+    elif prob_c1 <= 0.5: attempts = 100.0; reason="Probabilidad nula."
+    else: attempts = 100/prob_c1; reason=f"Con {prob_c1:.1f}% prob, necesitas {math.ceil(attempts)} intentos."
+    
+    inv_req = math.ceil(attempts) * account_data['cost']
+    salary = avg_pay1 - inv_req
+    
+    est_breakdown = {
+        "split": split_share, "refund": account_data['cost'], "bonus": account_data.get('p1_bonus', 0), "total": pay_val_1
+    }
+    
+    total_failures = n_sims - pass_c1
+    fail_stats = {}
+    if total_failures > 0:
+        for k, v in fail_reasons.items(): fail_stats[k] = (v/total_failures)*100
+            
     return {
         "prob_c1": prob_c1, "prob_c2": prob_c2, "prob_c3": prob_c3,
-        "avg_pay1": avg_pay1, "fail_reasons": fail_reasons,
-        "total_failures": n_sims - pass_c1
+        "avg_pay1": avg_pay1, "avg_pay2": avg_pay2, "avg_pay3": avg_pay3,
+        "time_p1": time_p1, "time_p2": time_p2, "time_c1": time_c1, "time_c2": time_c2, "time_c3": time_c3,
+        "inventory": math.ceil(attempts), "investment": inv_req, "net_profit": salary,
+        "stock_reason": reason, "first_pay_est": est_breakdown, "fail_stats": fail_stats, "total_failures": total_failures,
+        "is_2step": is_2step
     }
 
 # --- UI ---
@@ -252,10 +325,7 @@ else:
         # 1. CONFIGURACIÓN
         with tab_config:
             for i, item in enumerate(st.session_state['portfolio']):
-                # --- PARCHE DE MIGRACIÓN: SI NO TIENE JOURNAL, SE CREA ---
                 if 'journal' not in item: item['journal'] = []
-                # ---------------------------------------------------------
-                
                 with st.expander(f"⚙️ {item['full_name']} (Config)", expanded=False):
                     c1, c2, c3, c4 = st.columns(4)
                     k = str(item['id'])
@@ -272,11 +342,8 @@ else:
         # 2. DIARIO
         with tab_journal:
             st.subheader("📓 Registro de Operaciones Reales")
-            
             for item in st.session_state['portfolio']:
-                # Asegurar compatibilidad en tiempo real
                 if 'journal' not in item: item['journal'] = []
-                
                 with st.expander(f"📖 {item['full_name']} - Ingresar Trades", expanded=True):
                     with st.form(key=f"form_{item['id']}"):
                         f1, f2, f3, f4 = st.columns(4)
@@ -284,71 +351,92 @@ else:
                         t_gross = f2.number_input("Bruto ($)", value=0.0, step=10.0)
                         t_comm = f3.number_input("Comisión ($)", value=0.0, step=1.0)
                         t_swap = f4.number_input("Swap ($)", value=0.0, step=1.0)
-                        
                         if st.form_submit_button("💾 Registrar Trade"):
                             net = t_gross - t_comm - t_swap
-                            new_trade = {
-                                "date": str(t_date),
-                                "gross": t_gross, "comm": t_comm, "swap": t_swap,
-                                "net": net
-                            }
-                            item['journal'].append(new_trade)
-                            st.success(f"Trade registrado. Neto: ${net:.2f}")
-                            st.rerun()
+                            item['journal'].append({"date": str(t_date), "gross": t_gross, "comm": t_comm, "swap": t_swap, "net": net})
+                            st.success(f"Trade guardado: ${net:.2f}"); st.rerun()
 
                     if item['journal']:
                         df_j = pd.DataFrame(item['journal'])
-                        last_date = df_j.iloc[-1]['date']
-                        trades_on_date = df_j[df_j['date'] == last_date].shape[0]
-                        limit_trades = item['params']['trades_day']
-                        if trades_on_date > limit_trades:
-                            st.warning(f"⚠️ **ALERTA:** Has registrado {trades_on_date} trades el día {last_date}. Límite: {limit_trades}.")
-
-                        st.dataframe(df_j.tail(5), use_container_width=True)
                         total_pnl = df_j['net'].sum()
                         current_bal = item['data']['size'] + total_pnl
-                        
-                        col_m1, col_m2, col_m3 = st.columns(3)
-                        col_m1.metric("Balance Inicial", f"${item['data']['size']:,.0f}")
-                        col_m2.metric("P&L Real Acumulado", f"${total_pnl:,.2f}", delta_color="normal")
-                        col_m3.metric("Balance ACTUAL", f"${current_bal:,.2f}")
-                    else:
-                        st.info("Sin trades registrados aún.")
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("Balance Inicial", f"${item['data']['size']:,.0f}")
+                        c2.metric("P&L Acumulado", f"${total_pnl:,.2f}", delta_color="normal")
+                        c3.metric("Balance ACTUAL", f"${current_bal:,.2f}")
+                        st.dataframe(df_j.tail(5), use_container_width=True)
+                    else: st.info("Sin trades.")
 
-        # 3. SIMULACIÓN
+        # 3. SIMULACIÓN (RESTORED RICH UI)
         with tab_sim:
             if st.button("🚀 Re-Calcular Proyecciones (Basado en Balance Actual)", type="primary", use_container_width=True):
-                with st.spinner("Simulando futuros posibles..."):
+                with st.spinner("Ejecutando Montecarlo Avanzado..."):
                     results = []
-                    g_pay1 = 0
+                    g_inv = 0; g_pay1 = 0; g_pay2 = 0; g_pay3 = 0
                     
                     for item in st.session_state['portfolio']:
                         if 'journal' not in item: item['journal'] = []
-                        
-                        start_bal = item['data']['size']
-                        if item['journal']:
-                            start_bal += sum(t['net'] for t in item['journal'])
+                        start_bal = item['data']['size'] + sum(t['net'] for t in item['journal'])
                         
                         s = run_account_simulation(item['data'], item['params'], sim_precision, start_bal)
-                        g_pay1 += s['avg_pay1']
+                        g_inv += s['investment']
+                        g_pay1 += s['avg_pay1']; g_pay2 += s['avg_pay2']; g_pay3 += s['avg_pay3']
                         results.append({"name": item['full_name'], "stats": s, "start_bal": start_bal})
                     
-                    st.markdown("### 🔮 Proyección Actualizada")
-                    st.metric("Potencial 1er Retiro (Combinado)", f"${g_pay1:,.0f}")
+                    # RESULTADOS CONSOLIDADOS
+                    st.markdown("### 📊 Resultados Consolidados")
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Inversión Total (Riesgo)", f"${g_inv:,.0f}")
+                    # ROI Potencial basado en el primer ciclo completo
+                    total_potential = g_pay1 + g_pay2 + g_pay3
+                    roi = ((total_potential - g_inv)/g_inv)*100 if g_inv > 0 else 0
+                    m2.metric("Retorno Potencial (Ciclo 1)", f"${total_potential:,.0f}")
+                    m3.metric("ROI Potencial", f"{roi:.1f}%")
+                    
+                    # CASHFLOW
+                    st.markdown("### 💰 Proyección de Flujo de Caja")
+                    fc1, fc2, fc3 = st.columns(3)
+                    fc1.metric("Retiro 1 (Recuperación)", f"${g_pay1:,.0f}")
+                    fc2.metric("Retiro 2 (Beneficio)", f"${g_pay2:,.0f}")
+                    fc3.metric("Retiro 3 (Consistencia)", f"${g_pay3:,.0f}")
+                    
+                    st.divider()
+                    st.subheader("🔍 Desglose Detallado por Cuenta")
                     
                     for res in results:
                         s = res['stats']
-                        bal_fmt = f"${res['start_bal']:,.0f}"
-                        with st.expander(f"📊 {res['name']} (Desde: {bal_fmt})"):
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("Prob. Cobro", f"{s['prob_c1']:.1f}%")
-                            c2.metric("Monto Est.", f"${s['avg_pay1']:,.0f}")
+                        bk = s['first_pay_est']
+                        bal_str = f"Desde ${res['start_bal']:,.0f}"
+                        
+                        with st.expander(f"📈 {res['name']} ({bal_str}) | Prob. Cobro: {s['prob_c1']:.1f}%"):
+                            # Fila 1: Probabilidad y Tiempo
+                            c1, c2, c3, c4, c5 = st.columns(5)
+                            # Fase 1: Asumimos que se intenta pasar
+                            c1.metric("1. Fases", "En Proceso", f"⏱ {s['time_p1'] + s['time_p2']:.1f} m", delta_color="off")
                             
+                            # RETIROS
+                            c3.metric("1er Retiro", f"{s['prob_c1']:.1f}%", f"${s['avg_pay1']:,.0f} | ⏱ {s['time_c1']:.1f} m")
+                            c4.metric("2do Retiro", f"{s['prob_c2']:.1f}%", f"${s['avg_pay2']:,.0f} | ⏱ {s['time_c2']:.1f} m")
+                            c5.metric("3er Retiro", f"{s['prob_c3']:.1f}%", f"${s['avg_pay3']:,.0f} | ⏱ {s['time_c3']:.1f} m")
+                            
+                            st.markdown("---")
+                            
+                            # DIAGNÓSTICO
                             if s['total_failures'] > 0:
-                                fail_stats = s['fail_reasons']
-                                total = s['total_failures']
-                                st.caption("Riesgos Principales desde aquí:")
-                                for k, v in fail_stats.items():
+                                st.caption("💀 **Análisis de Riesgos (Causas de fallo):**")
+                                f_cols = st.columns(3)
+                                for k, v in s['fail_stats'].items():
                                     if v > 0:
-                                        pct = (v/total)*100
-                                        st.progress(int(pct), text=f"{k}: {pct:.1f}%")
+                                        with f_cols[list(s['fail_stats'].keys()).index(k) % 3]:
+                                            st.progress(int(v))
+                                            st.caption(f"{k}: {v:.1f}%")
+                            
+                            st.markdown("---")
+                            st.info(f"**Estrategia Sugerida:** {s['stock_reason']} (Inversión: ${s['investment']})")
+                            
+                            st.caption("💰 **Desglose 1er Pago:**")
+                            col_pay1, col_pay2, col_pay3, col_pay4 = st.columns(4)
+                            col_pay1.metric("Split", f"${bk['split']:,.0f}")
+                            col_pay2.metric("Refund", f"+${bk['refund']}")
+                            col_pay3.metric("Bonus", f"+${bk['bonus']}")
+                            col_pay4.metric("TOTAL", f"${bk['total']:,.0f}", delta="Neto")
